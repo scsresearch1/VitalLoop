@@ -3,17 +3,23 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
+    "start": "expo start --dev-client",
+    "start:expo-go": "expo start",
     "android": "expo run:android",
+    "android:clean": "expo prebuild --clean && expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "prebuild": "expo prebuild --clean",
+    "validate": "bash .code-quality-config/validate-code.sh || .code-quality-config/validate-code.bat",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
+    "quality-check": "npm run type-check && npm run lint"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-masked-view/masked-view": "^0.3.2",
     "babel-preset-expo": "~54.0.9",
     "expo": "~54.0.31",
-    "expo-bluetooth": "^0.0.0",
     "expo-blur": "^15.0.8",
     "expo-build-properties": "^1.0.10",
     "expo-dev-client": "^6.0.20",

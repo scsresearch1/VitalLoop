@@ -1,0 +1,8 @@
+# Temporary files
+*.log
+*.tmp
+*.backup
+
+# Output files
+tsc-output.log
+eslint-output.log

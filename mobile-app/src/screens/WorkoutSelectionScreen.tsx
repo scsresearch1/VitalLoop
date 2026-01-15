@@ -181,12 +181,12 @@ export default function WorkoutSelectionScreen({ onStartWorkout }: WorkoutSelect
               <CinematicCard
                 backgroundImage={workout.backgroundImage}
                 overlayOpacity={0.6}
-                style={[styles.workoutCard, { width: CARD_WIDTH }]}
+                style={[styles.workoutCard, { width: CARD_WIDTH }] as any}
               >
                 <View style={styles.workoutCardContent}>
                   <View style={styles.workoutCardHeader}>
                     <LinearGradient
-                      colors={workout.color}
+                      colors={workout.color as [string, string]}
                       style={styles.workoutIcon}
                     >
                       <workout.icon size={24} color={colors.white} />

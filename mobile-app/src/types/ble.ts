@@ -79,3 +79,18 @@ export interface ConnectionState {
   connectedDevice?: DeviceInfo;
   error?: string;
 }
+
+// Device type from react-native-ble-manager (safe fallback)
+export interface BLEDevice {
+  id: string;
+  name?: string;
+  rssi?: number;
+  advertising?: {
+    serviceUUIDs?: string[];
+    manufacturerData?: string;
+    txPowerLevel?: number;
+    solicitedServiceUUIDs?: string[];
+    serviceData?: Record<string, string>;
+    isConnectable?: boolean;
+  };
+}

@@ -12,36 +12,103 @@ import {
   FlatList,
   ActivityIndicator,
   Alert,
+  Linking,
 } from 'react-native';
-import { Device } from 'react-native-ble-manager';
 import { bleManager } from '../services/BLEManager';
+import { BLEDevice } from '../types/ble';
 
 interface DeviceScanScreenProps {
   onDeviceConnected: (deviceId: string) => void;
 }
 
 export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreenProps) {
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [devices, setDevices] = useState<BLEDevice[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [bluetoothState, setBluetoothState] = useState<string>('unknown');
+  const [initError, setInitError] = useState<string | null>(null);
+  const [lastDeviceId, setLastDeviceId] = useState<string | null>(null);
 
   useEffect(() => {
     initializeBLE();
+    checkBluetoothStatePeriodically();
+    checkLastDevice();
     return () => {
       bleManager.destroy();
     };
   }, []);
 
+  const checkLastDevice = () => {
+    const deviceId = bleManager.getLastConnectedDeviceId();
+    setLastDeviceId(deviceId);
+  };
+
   const initializeBLE = async () => {
     try {
       await bleManager.initialize();
+      const state = bleManager.getBluetoothState();
+      setBluetoothState(state);
+      setInitError(null);
     } catch (error) {
-      Alert.alert('Error', 'Failed to initialize Bluetooth');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to initialize Bluetooth';
       console.error(error);
+      setInitError(errorMessage);
+      
+      // Check if error is due to Bluetooth being off
+      const state = bleManager.getBluetoothState();
+      setBluetoothState(state);
+      
+      if (state === 'poweredOff') {
+        Alert.alert(
+          'Bluetooth Required',
+          'Bluetooth is turned off. Please enable Bluetooth to scan and connect to your ring.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => Linking.openSettings(),
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Error', errorMessage);
+      }
     }
   };
 
+  // Periodically check Bluetooth state to handle dynamic changes
+  const checkBluetoothStatePeriodically = () => {
+    const interval = setInterval(async () => {
+      try {
+        const state = await bleManager.checkBluetoothState();
+        setBluetoothState(state);
+      } catch (error) {
+        console.error('Failed to check Bluetooth state:', error);
+      }
+    }, 2000); // Check every 2 seconds
+
+    return () => clearInterval(interval);
+  };
+
   const handleScan = async () => {
+    // Check Bluetooth state before scanning
+    const currentState = bleManager.getBluetoothState();
+    if (currentState !== 'poweredOn') {
+      Alert.alert(
+        'Bluetooth Required',
+        `Bluetooth is ${currentState}. Please enable Bluetooth to scan for devices.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => Linking.openSettings(),
+          },
+        ]
+      );
+      return;
+    }
+
     setIsScanning(true);
     setDevices([]);
 
@@ -49,15 +116,96 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
       const foundDevices = await bleManager.scanForDevices(5000);
       setDevices(foundDevices);
     } catch (error) {
-      Alert.alert('Error', 'Failed to scan for devices');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to scan for devices';
       console.error(error);
+      
+      // Check if error is due to Bluetooth state
+      const state = bleManager.getBluetoothState();
+      if (state !== 'poweredOn') {
+        Alert.alert(
+          'Bluetooth Required',
+          `Cannot scan: Bluetooth is ${state}. Please enable Bluetooth.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => Linking.openSettings(),
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Error', errorMessage);
+      }
     } finally {
       setIsScanning(false);
     }
   };
 
-  const handleConnect = async (device: Device) => {
+  const handleReconnect = async () => {
+    if (!lastDeviceId) {
+      Alert.alert('Error', 'No previous device to reconnect to. Please scan and connect to a device first.');
+      return;
+    }
+
+    setIsReconnecting(true);
+
+    try {
+      await bleManager.reconnect();
+      
+      // Wait a bit for connection to establish
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const state = bleManager.getConnectionState();
+      if (state.isConnected) {
+        onDeviceConnected(lastDeviceId);
+      } else {
+        throw new Error('Reconnection failed');
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to reconnect to device';
+      console.error(error);
+      
+      // Check if error is due to Bluetooth state
+      const state = bleManager.getBluetoothState();
+      if (state !== 'poweredOn') {
+        Alert.alert(
+          'Bluetooth Required',
+          `Cannot reconnect: Bluetooth is ${state}. Please enable Bluetooth.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => Linking.openSettings(),
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Reconnection Failed', errorMessage);
+      }
+    } finally {
+      setIsReconnecting(false);
+    }
+  };
+
+  const handleConnect = async (device: BLEDevice) => {
     if (!device.id) return;
+
+    // Check Bluetooth state before connecting
+    const currentState = bleManager.getBluetoothState();
+    if (currentState !== 'poweredOn') {
+      Alert.alert(
+        'Bluetooth Required',
+        `Bluetooth is ${currentState}. Please enable Bluetooth to connect to your ring.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => Linking.openSettings(),
+          },
+        ]
+      );
+      return;
+    }
 
     setIsConnecting(true);
 
@@ -74,14 +222,32 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
         throw new Error('Connection failed');
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to connect to device');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to connect to device';
       console.error(error);
+      
+      // Check if error is due to Bluetooth state
+      const state = bleManager.getBluetoothState();
+      if (state !== 'poweredOn') {
+        Alert.alert(
+          'Bluetooth Required',
+          `Cannot connect: Bluetooth is ${state}. Please enable Bluetooth.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => Linking.openSettings(),
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Error', errorMessage);
+      }
     } finally {
       setIsConnecting(false);
     }
   };
 
-  const renderDevice = ({ item }: { item: Device }) => (
+  const renderDevice = ({ item }: { item: BLEDevice }) => (
     <TouchableOpacity
       style={styles.deviceItem}
       onPress={() => handleConnect(item)}
@@ -96,20 +262,72 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
     </TouchableOpacity>
   );
 
+  const isBluetoothOn = bluetoothState === 'poweredOn';
+  const isBluetoothOff = bluetoothState === 'poweredOff';
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Connect to Ring</Text>
       <Text style={styles.subtitle}>Scan for nearby Ring devices</Text>
 
+      {/* Bluetooth State Indicator */}
+      {isBluetoothOff && (
+        <View style={styles.bluetoothWarning}>
+          <Text style={styles.bluetoothWarningText}>
+            ⚠️ Bluetooth is OFF
+          </Text>
+          <Text style={styles.bluetoothWarningSubtext}>
+            Enable Bluetooth to scan and connect to your ring
+          </Text>
+          <TouchableOpacity
+            style={styles.settingsButton}
+            onPress={() => Linking.openSettings()}
+          >
+            <Text style={styles.settingsButtonText}>Open Settings</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {initError && !isBluetoothOff && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{initError}</Text>
+        </View>
+      )}
+
+      {/* Reconnect Button - Show if last device exists and not currently connected */}
+      {lastDeviceId && !isScanning && (
+        <TouchableOpacity
+          style={[
+            styles.reconnectButton,
+            (isReconnecting || isBluetoothOff) && styles.reconnectButtonDisabled
+          ]}
+          onPress={handleReconnect}
+          disabled={isReconnecting || isBluetoothOff}
+        >
+          {isReconnecting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.reconnectButtonText}>
+              Reconnect to Last Device
+            </Text>
+          )}
+        </TouchableOpacity>
+      )}
+
       <TouchableOpacity
-        style={[styles.scanButton, isScanning && styles.scanButtonDisabled]}
+        style={[
+          styles.scanButton,
+          (isScanning || isBluetoothOff) && styles.scanButtonDisabled
+        ]}
         onPress={handleScan}
-        disabled={isScanning}
+        disabled={isScanning || isBluetoothOff}
       >
         {isScanning ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.scanButtonText}>Scan for Devices</Text>
+          <Text style={styles.scanButtonText}>
+            {isBluetoothOff ? 'Bluetooth Required' : 'Scan for Devices'}
+          </Text>
         )}
       </TouchableOpacity>
 
@@ -197,5 +415,62 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 40,
     fontSize: 14,
+  },
+  bluetoothWarning: {
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: '#f59e0b',
+  },
+  bluetoothWarningText: {
+    color: '#f59e0b',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  bluetoothWarningSubtext: {
+    color: '#888',
+    fontSize: 14,
+    marginBottom: 12,
+  },
+  settingsButton: {
+    backgroundColor: '#8b5cf6',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  settingsButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  errorContainer: {
+    backgroundColor: '#1a1a1a',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: '#ef4444',
+  },
+  errorText: {
+    color: '#ef4444',
+    fontSize: 14,
+  },
+  reconnectButton: {
+    backgroundColor: '#10b981',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  reconnectButtonDisabled: {
+    opacity: 0.6,
+  },
+  reconnectButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

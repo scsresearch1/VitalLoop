@@ -74,6 +74,14 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
+      // Log NativeModules status for validation
+      const { NativeModules } = require('react-native');
+      const isPresent = NativeModules.BleManager !== null && NativeModules.BleManager !== undefined;
+      console.log('=== BLE NATIVE MODULE VALIDATION ===');
+      console.log('NativeModules.BleManager:', isPresent ? '✅ PRESENT' : '❌ MISSING');
+      console.log('All NativeModules keys:', Object.keys(NativeModules).filter(key => key.includes('Ble') || key.includes('ble')));
+      console.log('===================================');
+      
       await bleManager.initialize();
       setIsInitialized(true);
       setInitError(null);

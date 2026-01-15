@@ -12,7 +12,7 @@ import {
   Dimensions,
   ActivityIndicator,
 } from 'react-native';
-import { LineChart, AreaChart } from 'react-native-chart-kit';
+import { LineChart } from 'react-native-chart-kit';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { TrendingUp, Moon, Calendar } from 'lucide-react-native';
 import CinematicCard from '../components/styled/CinematicCard';
@@ -169,7 +169,7 @@ export default function MetricsScreen() {
               <Text style={styles.trendText}>+5%</Text>
             </View>
           </View>
-          <AreaChart
+          <LineChart
             data={hrData}
             width={width - 64}
             height={220}
@@ -197,7 +197,7 @@ export default function MetricsScreen() {
               <Text style={styles.trendText}>7.5hrs</Text>
             </View>
           </View>
-          <AreaChart
+          <LineChart
             data={sleepData}
             width={width - 64}
             height={220}

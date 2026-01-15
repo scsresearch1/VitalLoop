@@ -76,7 +76,7 @@ export default function ProfileScreen() {
           {/* Avatar */}
           <View style={styles.avatarContainer}>
             <LinearGradient
-              colors={colors.gradients.primary}
+              colors={colors.gradients.primary as [string, string, string]}
               style={styles.avatar}
             >
               <Text style={styles.avatarText}>{initials}</Text>
@@ -122,7 +122,7 @@ export default function ProfileScreen() {
               <GlassCard variant="medium" style={styles.menuItem}>
                 <View style={styles.menuItemContent}>
                   <LinearGradient
-                    colors={item.color}
+                    colors={item.color as [string, string]}
                     style={styles.menuIcon}
                   >
                     <item.icon size={24} color={colors.white} />

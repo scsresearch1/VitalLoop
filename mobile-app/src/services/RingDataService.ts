@@ -27,12 +27,21 @@ class RingDataService {
     try {
       // Fetch battery first
       const batteryInfo = await this.fetchBattery();
-      data.deviceInfo = { ...data.deviceInfo, ...batteryInfo } as any;
+      data.deviceInfo = { 
+        macAddress: '',
+        model: 'Unknown',
+        isConnected: false,
+        ...(data.deviceInfo || {}), 
+        ...batteryInfo 
+      } as RingData['deviceInfo'];
 
       // Fetch device info
       try {
         const deviceInfo = await this.fetchDeviceInfo();
-        data.deviceInfo = { ...data.deviceInfo, ...deviceInfo } as any;
+        data.deviceInfo = { 
+          ...data.deviceInfo,
+          ...deviceInfo 
+        } as RingData['deviceInfo'];
       } catch (error) {
         console.warn('Failed to fetch device info:', error);
       }

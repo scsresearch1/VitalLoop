@@ -108,7 +108,7 @@ export default function InsightsScreen() {
               style={[
                 styles.insightCard,
                 insight.isPositive ? styles.positiveBorder : styles.negativeBorder,
-              ]}
+              ] as any}
             >
               <View style={styles.insightContent}>
                 <View style={styles.insightHeader}>
@@ -127,7 +127,7 @@ export default function InsightsScreen() {
                 {insight.action && (
                   <TouchableOpacity style={styles.actionButton}>
                     <LinearGradient
-                      colors={colors.gradients.purplePink}
+                      colors={colors.gradients.purplePink as [string, string]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 0 }}
                       style={styles.actionGradient}

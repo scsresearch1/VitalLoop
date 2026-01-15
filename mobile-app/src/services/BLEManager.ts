@@ -11,41 +11,44 @@ import {
   ConnectionState,
   DeviceInfo,
   Opcode,
+  BLEDevice,
 } from '../types/ble';
 import { buildFrame, extractOpcode, validateCRC8 } from '../utils/crc';
 import { multiPacketHandler } from './MultiPacketHandler';
 import { logger } from '../utils/Logger';
 import { requestBLEPermissions, checkBLEPermissions } from '../utils/Permissions';
+import { NativeModules, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Import BLE Manager with fallback handling for native module
-let BleManager: any;
-let Device: any;
-let State: any;
+// Top-level import - no conditional patterns
+// react-native-ble-manager exports a singleton instance, not a class
+import BleManager from 'react-native-ble-manager';
 
-try {
-  const BLEModule = require('react-native-ble-manager');
-  BleManager = BLEModule.default || BLEModule.BleManager || BLEModule;
-  Device = BLEModule.Device;
-  State = BLEModule.State;
-} catch (error) {
-  console.error('Failed to import react-native-ble-manager:', error);
-  // Will be handled by availability check
-}
+// Validate native module is present at module load time
+const BleManagerNative = NativeModules.BleManager;
+const isNativeModuleAvailable = BleManagerNative !== null && BleManagerNative !== undefined;
 
-// Check if BleManager is available (native module linked)
-let BleManagerAvailable = false;
-try {
-  if (BleManager && (typeof BleManager === 'function' || typeof BleManager === 'object')) {
-    // Try to instantiate to verify it's actually available
-    BleManagerAvailable = true;
+// CRITICAL: Log module status for runtime validation
+if (Platform.OS === 'android') {
+  if (isNativeModuleAvailable) {
+    console.log('✅ NativeModules.BleManager: PRESENT');
+    console.log('✅ Native module is loaded at runtime');
+    console.log('✅ App is running as native Android build (not Expo Go)');
+    logger.log('✅ NativeModules.BleManager: PRESENT - Native module loaded successfully');
+  } else {
+    console.error('❌ NativeModules.BleManager: MISSING');
+    console.error('❌ Native module NOT found in NativeModules');
+    logger.error('❌ CRITICAL: BleManager native module not found in NativeModules');
+    logger.error('This means the APK was built without the native module.');
+    logger.error('Required actions:');
+    logger.error('1. Uninstall app from device');
+    logger.error('2. Run: npx expo prebuild --clean');
+    logger.error('3. Run: npx expo run:android');
+    logger.error('4. DO NOT use Expo Go - use dev client or production build');
   }
-} catch (error) {
-  logger.warn('BleManager native module not available:', error);
-  BleManagerAvailable = false;
 }
 
 class BLEManagerService {
-  private bleManager: BleManager | null = null;
   private connectionState: ConnectionState;
   private connectedDeviceId: string | null = null;
   private rxCharacteristic: string | null = null;
@@ -58,6 +61,13 @@ class BLEManagerService {
     timeout: NodeJS.Timeout;
   }> = new Map();
   private isAvailable: boolean = false;
+  private bluetoothState: string = 'unknown'; // 'unknown' | 'resetting' | 'unsupported' | 'unauthorized' | 'poweredOff' | 'poweredOn'
+  private lastConnectedDeviceId: string | null = null;
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 2; // Allow 1 silent failure, then retry
+  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private isReconnecting: boolean = false;
+  private readonly STORAGE_KEY_LAST_DEVICE = '@VitalLoop:lastConnectedDeviceId';
 
   constructor() {
     this.connectionState = {
@@ -66,48 +76,55 @@ class BLEManagerService {
       isConnected: false,
     };
     
-    if (BleManagerAvailable && BleManager) {
-      try {
-        // Try to create instance - this will fail if native module isn't linked
-        if (typeof BleManager === 'function') {
-          this.bleManager = new BleManager();
-        } else if (BleManager.default && typeof BleManager.default === 'function') {
-          this.bleManager = new BleManager.default();
-        } else {
-          throw new Error('BleManager is not a constructor');
-        }
-        this.isAvailable = true;
-        this.setupListeners();
-        logger.log('✅ BLE Manager instance created');
-      } catch (error: any) {
-        logger.error('Failed to create BleManager instance:', error);
-        logger.error('Error details:', error?.message || error);
-        this.isAvailable = false;
-        this.bleManager = null;
-        // Don't throw - allow app to continue
-      }
-    } else {
-      logger.warn('BleManager native module not available - BLE features disabled');
-      logger.warn('This usually means the native module was not included in the build.');
-      logger.warn('Make sure you are using a development build (expo-dev-client) or production build with native modules.');
+    // Validate native module is present before attempting to use it
+    if (!isNativeModuleAvailable) {
+      const errorMsg = 'BLE native module not available. The app was built without native BLE support. Please rebuild using "expo-dev-client" or ensure react-native-ble-manager is properly linked in your build configuration.';
+      logger.error(errorMsg);
+      logger.error('NativeModules.BleManager:', BleManagerNative);
       this.isAvailable = false;
-      this.bleManager = null;
+      return;
     }
+    
+    // BleManager is a singleton instance, not a class - use it directly
+    if (!BleManager || typeof BleManager !== 'object') {
+      logger.error('BleManager module structure unexpected - native module may not be properly linked');
+      this.isAvailable = false;
+      return;
+    }
+    
+    this.isAvailable = true;
+    this.setupListeners();
+    logger.log('✅ BLE Manager initialized - native module verified');
   }
 
   private setupListeners() {
-    if (!this.bleManager || !this.isAvailable) {
+    if (!this.isAvailable || !BleManager) {
       return;
     }
 
     try {
-      // BLE State changes
-      this.bleManager.addListener('BleManagerDidUpdateState', (args: { state: State }) => {
-        logger.log('BLE State changed:', args.state);
+      // BLE State changes - CRITICAL: Track state for gating operations
+      BleManager.addListener('BleManagerDidUpdateState', (args: { state: string }) => {
+        const previousState = this.bluetoothState;
+        this.bluetoothState = args.state;
+        logger.log(`BLE State changed: ${previousState} → ${args.state}`);
+        
+        // If Bluetooth was off and is now on, log success
+        if (previousState === 'poweredOff' && args.state === 'poweredOn') {
+          logger.log('✅ Bluetooth enabled - scan/connect operations now available');
+        }
+        
+        // If Bluetooth turned off, clear connection state
+        if (args.state === 'poweredOff') {
+          logger.warn('⚠️ Bluetooth turned OFF - scan/connect operations blocked');
+          if (this.connectionState.isConnected) {
+            logger.warn('Connection will be lost when Bluetooth is off');
+          }
+        }
       });
 
       // Characteristic notifications
-      this.bleManager.addListener(
+      BleManager.addListener(
         'BleManagerDidUpdateValueForCharacteristic',
         (data: { value: number[]; characteristic: string; peripheral: string }) => {
           this.handleNotification(data.value, data.characteristic);
@@ -115,18 +132,40 @@ class BLEManagerService {
       );
 
       // Connection events
-      this.bleManager.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
+      BleManager.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
         logger.log('✅ Connected to device:', data.peripheral);
         this.connectionState.isConnecting = false;
         this.connectionState.isConnected = true;
         this.connectedDeviceId = data.peripheral;
+        
+        // CRITICAL: Save device ID for reconnection
+        this.saveLastDeviceId(data.peripheral);
+        
+        // Reset reconnect attempts on successful connection
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+        
+        // Clear any pending reconnect timeout
+        if (this.reconnectTimeout) {
+          clearTimeout(this.reconnectTimeout);
+          this.reconnectTimeout = null;
+        }
+        
         this.discoverServices(data.peripheral);
       });
 
-      this.bleManager.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
+      BleManager.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
         logger.log('❌ Disconnected from device:', data.peripheral);
         this.connectionState.isConnected = false;
+        
+        // CRITICAL: Store device ID before clearing for reconnection
+        const disconnectedDeviceId = this.connectedDeviceId || data.peripheral;
         this.connectedDeviceId = null;
+        
+        // Trigger auto-reconnect if this was an unexpected disconnect
+        if (disconnectedDeviceId && !this.isReconnecting) {
+          this.handleUnexpectedDisconnect(disconnectedDeviceId);
+        }
       });
     } catch (error) {
       logger.error('Failed to setup BLE listeners:', error);
@@ -134,11 +173,175 @@ class BLEManagerService {
   }
 
   /**
+   * Check current Bluetooth state
+   * Returns: 'unknown' | 'resetting' | 'unsupported' | 'unauthorized' | 'poweredOff' | 'poweredOn'
+   */
+  async checkBluetoothState(): Promise<string> {
+    if (!this.isAvailable || !BleManager) {
+      return 'unsupported';
+    }
+
+    try {
+      // react-native-ble-manager uses checkState() method
+      const state = await BleManager.checkState();
+      this.bluetoothState = state;
+      logger.log(`Bluetooth state checked: ${state}`);
+      return state;
+    } catch (error) {
+      logger.error('Failed to check Bluetooth state:', error);
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Check if Bluetooth is powered on
+   */
+  private isBluetoothPoweredOn(): boolean {
+    return this.bluetoothState === 'poweredOn';
+  }
+
+  /**
+   * Load last connected device ID from storage
+   */
+  private async loadLastDeviceId(): Promise<string | null> {
+    try {
+      const deviceId = await AsyncStorage.getItem(this.STORAGE_KEY_LAST_DEVICE);
+      if (deviceId) {
+        this.lastConnectedDeviceId = deviceId;
+        logger.log(`Loaded last connected device ID: ${deviceId}`);
+      }
+      return deviceId;
+    } catch (error) {
+      logger.error('Failed to load last device ID:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Save last connected device ID to storage
+   */
+  private async saveLastDeviceId(deviceId: string): Promise<void> {
+    try {
+      await AsyncStorage.setItem(this.STORAGE_KEY_LAST_DEVICE, deviceId);
+      this.lastConnectedDeviceId = deviceId;
+      logger.log(`Saved last connected device ID: ${deviceId}`);
+    } catch (error) {
+      logger.error('Failed to save last device ID:', error);
+    }
+  }
+
+  /**
+   * Clear last connected device ID from storage
+   */
+  private async clearLastDeviceId(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(this.STORAGE_KEY_LAST_DEVICE);
+      this.lastConnectedDeviceId = null;
+      logger.log('Cleared last connected device ID');
+    } catch (error) {
+      logger.error('Failed to clear last device ID:', error);
+    }
+  }
+
+  /**
+   * Handle unexpected disconnect - attempt auto-reconnect
+   */
+  private async handleUnexpectedDisconnect(deviceId: string): Promise<void> {
+    // Don't auto-reconnect if Bluetooth is off
+    if (!this.isBluetoothPoweredOn()) {
+      logger.warn('Bluetooth is off - skipping auto-reconnect');
+      return;
+    }
+
+    // Don't auto-reconnect if already reconnecting
+    if (this.isReconnecting) {
+      logger.warn('Already reconnecting - skipping duplicate attempt');
+      return;
+    }
+
+    // Reset reconnect attempts if we have a new device
+    if (this.lastConnectedDeviceId !== deviceId) {
+      this.reconnectAttempts = 0;
+    }
+
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+
+    logger.log(`Attempting auto-reconnect (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) to device: ${deviceId}`);
+
+    // Wait a bit before reconnecting (give system time to clean up)
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    try {
+      await this.connect(deviceId);
+      logger.log('✅ Auto-reconnect successful');
+      this.reconnectAttempts = 0;
+      this.isReconnecting = false;
+    } catch (error) {
+      logger.warn(`Auto-reconnect attempt ${this.reconnectAttempts} failed:`, error);
+      
+      // If we haven't reached max attempts, retry
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        logger.log(`Will retry auto-reconnect (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`);
+        // Retry after delay
+        this.reconnectTimeout = setTimeout(() => {
+          this.isReconnecting = false; // Reset flag to allow retry
+          this.handleUnexpectedDisconnect(deviceId);
+        }, 3000); // Wait 3 seconds before retry
+      } else {
+        logger.error(`Auto-reconnect failed after ${this.maxReconnectAttempts} attempts`);
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+        this.connectionState.error = 'Connection lost. Tap "Reconnect" to try again.';
+      }
+    }
+  }
+
+  /**
+   * Manual reconnect to last connected device
+   */
+  async reconnect(): Promise<void> {
+    if (!this.lastConnectedDeviceId) {
+      const storedId = await this.loadLastDeviceId();
+      if (!storedId) {
+        throw new Error('No previous device to reconnect to. Please scan and connect to a device first.');
+      }
+    }
+
+    const deviceId = this.lastConnectedDeviceId;
+    if (!deviceId) {
+      throw new Error('No previous device to reconnect to. Please scan and connect to a device first.');
+    }
+
+    // Reset reconnect attempts for manual reconnect
+    this.reconnectAttempts = 0;
+    this.isReconnecting = false;
+
+    logger.log(`Manual reconnect requested to device: ${deviceId}`);
+    
+    try {
+      await this.connect(deviceId);
+      logger.log('✅ Manual reconnect successful');
+    } catch (error) {
+      logger.error('Manual reconnect failed:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Initialize BLE Manager
    */
   async initialize(): Promise<void> {
-    if (!this.bleManager || !this.isAvailable) {
+    // Double-check native module availability
+    if (!isNativeModuleAvailable) {
       const errorMsg = 'BLE native module not available. The app was built without native BLE support. Please rebuild using "expo-dev-client" or ensure react-native-ble-manager is properly linked in your build configuration.';
+      logger.error(errorMsg);
+      logger.error('NativeModules check failed - module not in APK binary');
+      throw new Error(errorMsg);
+    }
+    
+    if (!this.isAvailable || !BleManager) {
+      const errorMsg = 'BLE Manager not available. Native module may not be properly initialized.';
       logger.error(errorMsg);
       throw new Error(errorMsg);
     }
@@ -156,9 +359,34 @@ class BLEManagerService {
       
       logger.log('✅ BLE permissions granted');
       
-      // Initialize BLE Manager
-      await this.bleManager.start({ showAlert: false });
+      // Initialize BLE Manager (singleton instance)
+      await BleManager.start({ showAlert: false });
       logger.log('✅ BLE Manager initialized');
+      
+      // CRITICAL: Check Bluetooth state on startup
+      logger.log('Checking Bluetooth state...');
+      const state = await this.checkBluetoothState();
+      
+      if (!this.isBluetoothPoweredOn()) {
+        const errorMsg = `Bluetooth is ${state}. Please enable Bluetooth to scan and connect to your ring.`;
+        logger.error(`❌ ${errorMsg}`);
+        this.connectionState.error = errorMsg;
+        throw new Error(errorMsg);
+      }
+      
+      logger.log('✅ Bluetooth is powered ON - ready for scan/connect operations');
+      
+      // Load last connected device ID from storage
+      await this.loadLastDeviceId();
+      
+      // Optional: Auto-reconnect on startup if device was previously connected
+      // This can be enabled if desired, but not required for D3 acceptance
+      // if (this.lastConnectedDeviceId && this.isBluetoothPoweredOn()) {
+      //   logger.log('Attempting auto-reconnect on startup...');
+      //   setTimeout(() => {
+      //     this.handleUnexpectedDisconnect(this.lastConnectedDeviceId!);
+      //   }, 1000);
+      // }
     } catch (error) {
       logger.error('Failed to initialize BLE:', error);
       // Don't throw - allow app to continue without BLE
@@ -174,10 +402,18 @@ class BLEManagerService {
    * Scan for Ring devices
    * @param duration - Scan duration in milliseconds (default: 5000)
    */
-  async scanForDevices(duration: number = 5000): Promise<Device[]> {
-    if (!this.bleManager || !this.isAvailable) {
+  async scanForDevices(duration: number = 5000): Promise<BLEDevice[]> {
+    if (!this.isAvailable || !BleManager) {
       logger.warn('BLE Manager not available for scanning');
       return [];
+    }
+
+    // CRITICAL: Check Bluetooth state before scanning
+    if (!this.isBluetoothPoweredOn()) {
+      const currentState = this.bluetoothState;
+      const errorMsg = `Cannot scan: Bluetooth is ${currentState}. Please enable Bluetooth to scan for devices.`;
+      logger.error(`❌ ${errorMsg}`);
+      throw new Error(errorMsg);
     }
 
     // Check permissions before scanning
@@ -192,16 +428,16 @@ class BLEManagerService {
     }
 
     this.connectionState.isScanning = true;
-    const foundDevices: Device[] = [];
+    const foundDevices: BLEDevice[] = [];
 
     try {
       // Start scan
-      await this.bleManager.scan([], duration, true);
+      await BleManager.scan([], duration, true);
 
       // Listen for discovered devices
-      const scanListener = this.bleManager.addListener(
+      const scanListener = BleManager.addListener(
         'BleManagerDiscoverPeripheral',
-        (device: Device) => {
+        (device: BLEDevice) => {
           // Filter for Ring devices (check name or service UUID)
           if (
             device.name?.includes('Ring') ||
@@ -232,8 +468,16 @@ class BLEManagerService {
    * Connect to a Ring device
    */
   async connect(deviceId: string): Promise<void> {
-    if (!this.bleManager || !this.isAvailable) {
+    if (!this.isAvailable || !BleManager) {
       throw new Error('BLE Manager not available - native module not linked');
+    }
+
+    // CRITICAL: Check Bluetooth state before connecting
+    if (!this.isBluetoothPoweredOn()) {
+      const currentState = this.bluetoothState;
+      const errorMsg = `Cannot connect: Bluetooth is ${currentState}. Please enable Bluetooth to connect to your ring.`;
+      logger.error(`❌ ${errorMsg}`);
+      throw new Error(errorMsg);
     }
 
     if (this.connectionState.isConnecting || this.connectionState.isConnected) {
@@ -244,7 +488,7 @@ class BLEManagerService {
     this.connectionState.error = undefined;
 
     try {
-      await this.bleManager.connect(deviceId);
+      await BleManager.connect(deviceId);
       // Connection will be confirmed via listener
     } catch (error) {
       this.connectionState.isConnecting = false;
@@ -258,10 +502,10 @@ class BLEManagerService {
    */
   private async discoverServices(deviceId: string): Promise<void> {
     try {
-      const services = await this.bleManager.retrieveServices(deviceId);
+      const services = await BleManager.retrieveServices(deviceId);
       
       // Find main service
-      const mainService = services.find(s => s.uuid.toLowerCase() === GATT_SERVICE_UUID.toLowerCase());
+      const mainService = services.find((s: any) => s.uuid.toLowerCase() === GATT_SERVICE_UUID.toLowerCase());
       
       if (!mainService) {
         throw new Error('Main service not found');
@@ -271,11 +515,11 @@ class BLEManagerService {
 
       // Find TX and RX characteristics
       const txChar = mainService.characteristics?.find(
-        c => c.uuid.toLowerCase().includes('fd03') || c.uuid.toLowerCase() === GATT_TX_CHARACTERISTIC_UUID.toLowerCase()
+        (c: any) => c.uuid.toLowerCase().includes('fd03') || c.uuid.toLowerCase() === GATT_TX_CHARACTERISTIC_UUID.toLowerCase()
       );
       
       const rxChar = mainService.characteristics?.find(
-        c => c.uuid.toLowerCase().includes('fd04') || c.uuid.toLowerCase() === GATT_RX_CHARACTERISTIC_UUID.toLowerCase()
+        (c: any) => c.uuid.toLowerCase().includes('fd04') || c.uuid.toLowerCase() === GATT_RX_CHARACTERISTIC_UUID.toLowerCase()
       );
 
       if (!txChar || !rxChar) {
@@ -301,7 +545,7 @@ class BLEManagerService {
    */
   private async enableNotifications(deviceId: string, characteristicUUID: string): Promise<void> {
     try {
-      await this.bleManager.startNotification(deviceId, this.serviceUUID!, characteristicUUID);
+      await BleManager.startNotification(deviceId, this.serviceUUID!, characteristicUUID);
       logger.log('✅ Notifications enabled');
     } catch (error) {
       logger.error('Failed to enable notifications:', error);
@@ -334,21 +578,23 @@ class BLEManagerService {
     
     if (hasMorePackets) {
       logger.debug(`Multi-packet response: more packets expected for opcode 0x${opcode.toString(16)}`);
+      // More packets coming, don't resolve yet
+      return;
     }
 
     // Check if this is a response to a pending request
     const pendingRequest = this.pendingRequests.get(opcode);
-    if (pendingRequest && !hasMorePackets) {
-      // Multi-packet complete, resolve with complete data
-      logger.debug(`Multi-packet complete for opcode 0x${opcode.toString(16)}`);
-      clearTimeout(pendingRequest.timeout);
-      this.pendingRequests.delete(opcode);
-      pendingRequest.resolve(data);
-      return;
-    } else if (pendingRequest && hasMorePackets) {
-      // More packets coming, don't resolve yet
-      logger.debug(`Waiting for more packets for opcode 0x${opcode.toString(16)}`);
-      return;
+    if (pendingRequest) {
+      // Check if multi-packet is complete (for multi-packet responses)
+      const completeData = multiPacketHandler.getCompleteData(opcode);
+      if (completeData || !hasMorePackets) {
+        // Multi-packet complete or single-packet response, resolve
+        logger.debug(`Response complete for opcode 0x${opcode.toString(16)}`);
+        clearTimeout(pendingRequest.timeout);
+        this.pendingRequests.delete(opcode);
+        pendingRequest.resolve(data);
+        return;
+      }
     }
 
     // Check for notification listeners (for single-packet notifications)
@@ -365,7 +611,7 @@ class BLEManagerService {
    * Send command to device
    */
   async sendCommand(opcode: Opcode, payload: number[] = []): Promise<number[]> {
-    if (!this.bleManager || !this.isAvailable) {
+    if (!this.isAvailable || !BleManager) {
       throw new Error('BLE Manager not available - native module not linked');
     }
 
@@ -382,7 +628,7 @@ class BLEManagerService {
 
     try {
       // Write to TX characteristic
-      await this.bleManager.write(
+      await BleManager.write(
         this.connectedDeviceId!,
         this.serviceUUID,
         this.txCharacteristic,
@@ -434,21 +680,42 @@ class BLEManagerService {
 
   /**
    * Disconnect from device
+   * @param clearStoredDevice - If true, clears stored device ID (for manual disconnect)
    */
-  async disconnect(): Promise<void> {
-    if (!this.bleManager || !this.isAvailable) {
+  async disconnect(clearStoredDevice: boolean = false): Promise<void> {
+    if (!this.isAvailable || !BleManager) {
       return;
     }
 
+    // Clear any pending reconnect attempts
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    this.isReconnecting = false;
+    this.reconnectAttempts = 0;
+
     if (this.connectedDeviceId) {
       try {
-        await this.bleManager.disconnect(this.connectedDeviceId);
+        await BleManager.disconnect(this.connectedDeviceId);
       } catch (error) {
         console.error('Disconnect error:', error);
       }
     }
     this.connectionState.isConnected = false;
     this.connectedDeviceId = null;
+
+    // If manual disconnect, clear stored device ID
+    if (clearStoredDevice) {
+      await this.clearLastDeviceId();
+    }
+  }
+
+  /**
+   * Get last connected device ID (for UI display)
+   */
+  getLastConnectedDeviceId(): string | null {
+    return this.lastConnectedDeviceId;
   }
 
   /**
@@ -459,12 +726,19 @@ class BLEManagerService {
   }
 
   /**
+   * Get current Bluetooth state
+   */
+  getBluetoothState(): string {
+    return this.bluetoothState;
+  }
+
+  /**
    * Cleanup
    */
   destroy(): void {
-    if (this.bleManager && this.isAvailable) {
+    if (this.isAvailable && BleManager) {
       try {
-        this.bleManager.destroy();
+        BleManager.destroy();
       } catch (error) {
         logger.error('Error destroying BLE Manager:', error);
       }
@@ -505,13 +779,24 @@ export const bleManager = {
     return getBLEManager().connect(deviceId);
   },
   
-  async disconnect() {
+  async disconnect(clearStoredDevice?: boolean) {
     if (_bleManagerInstance) {
-      await _bleManagerInstance.disconnect();
+      await _bleManagerInstance.disconnect(clearStoredDevice);
     }
   },
   
-  async sendCommand(opcode: any, payload?: number[]) {
+  async reconnect() {
+    return getBLEManager().reconnect();
+  },
+  
+  getLastConnectedDeviceId() {
+    if (!_bleManagerInstance) {
+      return null;
+    }
+    return _bleManagerInstance.getLastConnectedDeviceId();
+  },
+  
+  async sendCommand(opcode: Opcode, payload?: number[]) {
     return getBLEManager().sendCommand(opcode, payload);
   },
   
@@ -528,6 +813,17 @@ export const bleManager = {
       };
     }
     return _bleManagerInstance.getConnectionState();
+  },
+  
+  async checkBluetoothState() {
+    return getBLEManager().checkBluetoothState();
+  },
+  
+  getBluetoothState() {
+    if (!_bleManagerInstance) {
+      return 'unknown';
+    }
+    return _bleManagerInstance.getBluetoothState();
   },
   
   destroy() {

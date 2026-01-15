@@ -24,6 +24,29 @@
         "NODE_ENV": "production"
       }
     },
+    "production-aab": {
+      "android": {
+        "buildType": "app-bundle",
+        "autoIncrement": true,
+        "credentialsSource": "remote"
+      },
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "prebuildCommand": "npx expo prebuild --platform android --clean"
+    },
+    "production-apk": {
+      "android": {
+        "buildType": "apk",
+        "autoIncrement": true,
+        "credentialsSource": "remote",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "NODE_ENV": "production"
+      },
+      "prebuildCommand": "npx expo prebuild --platform android --clean"
+    },
     "production": {
       "android": {
         "buildType": "apk",
@@ -34,7 +57,7 @@
       "env": {
         "NODE_ENV": "production"
       },
-      "prebuildCommand": "npx expo prebuild --clean"
+      "prebuildCommand": "npx expo prebuild --platform android --clean"
     }
   },
   "submit": {

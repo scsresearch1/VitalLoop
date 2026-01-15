@@ -50,6 +50,10 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
       const state = bleManager.getBluetoothState();
       setBluetoothState(state);
       setInitError(null);
+      
+      // Auto-scan is enabled in App.tsx, but we can also enable it here as backup
+      // The scan will start automatically once Bluetooth is on
+      console.log('✅ BLE initialized - auto-scan will start when Bluetooth is enabled');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to initialize Bluetooth';
       console.error(error);
@@ -59,15 +63,19 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
       const state = bleManager.getBluetoothState();
       setBluetoothState(state);
       
-      if (state === 'poweredOff') {
+      if (state === 'poweredOff' || state === 'off') {
         Alert.alert(
           'Bluetooth Required',
-          'Bluetooth is turned off. Please enable Bluetooth to scan and connect to your ring.',
+          'Bluetooth is turned off. Please enable Bluetooth to automatically scan and connect to your ring.',
           [
             { text: 'Cancel', style: 'cancel' },
             {
               text: 'Open Settings',
-              onPress: () => Linking.openSettings(),
+              onPress: () => {
+                Linking.openSettings();
+                // After opening settings, the state listener will detect when Bluetooth turns on
+                // and automatically start scanning
+              },
             },
           ]
         );
@@ -82,7 +90,13 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
     const interval = setInterval(async () => {
       try {
         const state = await bleManager.checkBluetoothState();
+        const previousState = bluetoothState;
         setBluetoothState(state);
+        
+        // If Bluetooth just turned on, auto-scan will start automatically
+        if ((previousState === 'poweredOff' || previousState === 'off') && state === 'poweredOn') {
+          console.log('✅ Bluetooth turned on - auto-scan will start automatically');
+        }
       } catch (error) {
         console.error('Failed to check Bluetooth state:', error);
       }
@@ -277,7 +291,10 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
             ⚠️ Bluetooth is OFF
           </Text>
           <Text style={styles.bluetoothWarningSubtext}>
-            Enable Bluetooth to scan and connect to your ring
+            Enable Bluetooth to automatically scan and connect to your ring
+          </Text>
+          <Text style={styles.autoConnectHint}>
+            Once enabled, the app will automatically find and connect to your ring
           </Text>
           <TouchableOpacity
             style={styles.settingsButton}
@@ -285,6 +302,18 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
           >
             <Text style={styles.settingsButtonText}>Open Settings</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Auto-scan Status */}
+      {isBluetoothOn && !isScanning && devices.length === 0 && (
+        <View style={styles.autoScanStatus}>
+          <Text style={styles.autoScanText}>
+            🔍 Automatically scanning for Ring device...
+          </Text>
+          <Text style={styles.autoScanSubtext}>
+            The app will connect automatically when found
+          </Text>
         </View>
       )}
 
@@ -472,5 +501,30 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  autoConnectHint: {
+    color: '#888',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  autoScanStatus: {
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: '#10b981',
+  },
+  autoScanText: {
+    color: '#10b981',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  autoScanSubtext: {
+    color: '#888',
+    fontSize: 14,
   },
 });

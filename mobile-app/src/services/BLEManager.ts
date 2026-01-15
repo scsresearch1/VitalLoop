@@ -68,6 +68,10 @@ class BLEManagerService {
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isReconnecting: boolean = false;
   private readonly STORAGE_KEY_LAST_DEVICE = '@VitalLoop:lastConnectedDeviceId';
+  private autoScanEnabled: boolean = false;
+  private autoConnectEnabled: boolean = false;
+  private autoScanInterval: NodeJS.Timeout | null = null;
+  private scanListener: any = null;
 
   constructor() {
     this.connectionState = {
@@ -111,9 +115,14 @@ class BLEManagerService {
         this.bluetoothState = normalizedState;
         logger.log(`BLE State changed: ${previousState} → ${args.state} (normalized: ${normalizedState})`);
         
-        // If Bluetooth was off and is now on, log success
+        // If Bluetooth was off and is now on, automatically start scanning
         if ((previousState === 'poweredOff' || previousState === 'off') && normalizedState === 'poweredOn') {
           logger.log('✅ Bluetooth enabled - scan/connect operations now available');
+          // Auto-start scanning if enabled
+          if (this.autoScanEnabled && !this.connectionState.isConnected) {
+            logger.log('🔄 Auto-starting scan (Bluetooth just turned on)');
+            this.startAutoScan();
+          }
         }
         
         // If Bluetooth turned off, clear connection state
@@ -122,6 +131,8 @@ class BLEManagerService {
           if (this.connectionState.isConnected) {
             logger.warn('Connection will be lost when Bluetooth is off');
           }
+          // Stop auto-scanning
+          this.stopAutoScan();
         }
       });
 
@@ -142,6 +153,9 @@ class BLEManagerService {
         
         // CRITICAL: Save device ID for reconnection
         this.saveLastDeviceId(data.peripheral);
+        
+        // Stop auto-scanning once connected
+        this.stopAutoScan();
         
         // Reset reconnect attempts on successful connection
         this.reconnectAttempts = 0;
@@ -427,6 +441,12 @@ class BLEManagerService {
       // Load last connected device ID from storage
       await this.loadLastDeviceId();
       
+      // Auto-start scanning and connecting if enabled
+      if (this.autoScanEnabled) {
+        logger.log('🔄 Auto-scan enabled - starting automatic scan for Ring device');
+        this.startAutoScan();
+      }
+      
       // Optional: Auto-reconnect on startup if device was previously connected
       // This can be enabled if desired, but not required for D3 acceptance
       // if (this.lastConnectedDeviceId && this.isBluetoothPoweredOn()) {
@@ -487,22 +507,49 @@ class BLEManagerService {
         'BleManagerDiscoverPeripheral',
         (device: BLEDevice) => {
           // Filter for Ring devices (check name or service UUID)
-          if (
+          const isRingDevice = 
             device.name?.includes('Ring') ||
             device.name?.includes('R01') ||
             device.name?.includes('R02') ||
             device.name?.includes('R03') ||
-            device.advertising?.serviceUUIDs?.includes(GATT_SERVICE_UUID)
-          ) {
+            device.advertising?.serviceUUIDs?.includes(GATT_SERVICE_UUID);
+
+          if (isRingDevice) {
             foundDevices.push(device);
+            logger.log(`🔔 Ring device discovered: ${device.name || device.id}`);
+            
+            // Auto-connect if enabled and not already connected/connecting
+            if (this.autoConnectEnabled && 
+                !this.connectionState.isConnected && 
+                !this.connectionState.isConnecting && 
+                device.id) {
+              logger.log(`🔗 Auto-connecting to Ring device: ${device.name || device.id}`);
+              // Stop auto-scanning once we're connecting
+              this.stopAutoScan();
+              this.connect(device.id).catch(error => {
+                logger.error('Auto-connect failed:', error);
+                // Resume auto-scan if connection failed
+                if (this.autoScanEnabled && !this.connectionState.isConnected) {
+                  setTimeout(() => this.startAutoScan(), 3000);
+                }
+              });
+            }
           }
         }
       );
+      
+      // Store listener for cleanup
+      this.scanListener = scanListener;
 
       // Wait for scan to complete
       await new Promise(resolve => setTimeout(resolve, duration));
 
-      scanListener.remove();
+      if (scanListener) {
+        scanListener.remove();
+        if (this.scanListener === scanListener) {
+          this.scanListener = null;
+        }
+      }
     } catch (error) {
       logger.error('Scan error:', error);
     } finally {
@@ -781,9 +828,92 @@ class BLEManagerService {
   }
 
   /**
+   * Enable automatic scanning and connection
+   * Automatically scans for Ring devices and connects when found
+   */
+  enableAutoScanAndConnect(): void {
+    this.autoScanEnabled = true;
+    this.autoConnectEnabled = true;
+    logger.log('✅ Auto-scan and auto-connect enabled');
+    
+    // Start scanning if Bluetooth is on
+    if (this.isBluetoothPoweredOn() && !this.connectionState.isConnected) {
+      this.startAutoScan();
+    }
+  }
+
+  /**
+   * Disable automatic scanning
+   */
+  disableAutoScan(): void {
+    this.autoScanEnabled = false;
+    this.autoConnectEnabled = false;
+    this.stopAutoScan();
+    logger.log('⏸️ Auto-scan disabled');
+  }
+
+  /**
+   * Start automatic scanning for Ring devices
+   */
+  private async startAutoScan(): Promise<void> {
+    if (!this.autoScanEnabled || this.connectionState.isConnected || this.connectionState.isScanning) {
+      return;
+    }
+
+    if (!this.isBluetoothPoweredOn()) {
+      logger.warn('Cannot auto-scan: Bluetooth is not powered on');
+      return;
+    }
+
+    try {
+      logger.log('🔍 Starting automatic scan for Ring device...');
+      
+      // Scan for 10 seconds
+      await this.scanForDevices(10000);
+      
+      // If no device found, retry after delay
+      if (!this.connectionState.isConnected) {
+        logger.log('⏳ No Ring device found, will retry in 5 seconds...');
+        this.autoScanInterval = setTimeout(() => {
+          if (this.autoScanEnabled && !this.connectionState.isConnected) {
+            this.startAutoScan();
+          }
+        }, 5000);
+      }
+    } catch (error) {
+      logger.error('Auto-scan error:', error);
+      // Retry after delay
+      this.autoScanInterval = setTimeout(() => {
+        if (this.autoScanEnabled && !this.connectionState.isConnected) {
+          this.startAutoScan();
+        }
+      }, 5000);
+    }
+  }
+
+  /**
+   * Stop automatic scanning
+   */
+  private stopAutoScan(): void {
+    if (this.autoScanInterval) {
+      clearTimeout(this.autoScanInterval);
+      this.autoScanInterval = null;
+    }
+    if (this.scanListener) {
+      this.scanListener.remove();
+      this.scanListener = null;
+    }
+  }
+
+  /**
    * Cleanup
    */
   destroy(): void {
+    // Stop auto-scanning
+    this.stopAutoScan();
+    this.autoScanEnabled = false;
+    this.autoConnectEnabled = false;
+    
     if (this.isAvailable && BleManager) {
       try {
         BleManager.destroy();
@@ -879,5 +1009,13 @@ export const bleManager = {
       _bleManagerInstance.destroy();
       _bleManagerInstance = null;
     }
+  },
+  
+  enableAutoScanAndConnect() {
+    return getBLEManager().enableAutoScanAndConnect();
+  },
+  
+  disableAutoScan() {
+    return getBLEManager().disableAutoScan();
   },
 };

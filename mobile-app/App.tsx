@@ -116,6 +116,12 @@ export default function App() {
       
       // Now safe to initialize BLE Manager
       await bleManager.initialize();
+      
+      // Enable automatic scanning and connection
+      console.log('🔄 Enabling automatic scan and connect...');
+      bleManager.enableAutoScanAndConnect();
+      console.log('✅ Auto-scan enabled - will automatically find and connect to Ring');
+      
       setIsInitialized(true);
       setInitError(null);
     } catch (error) {

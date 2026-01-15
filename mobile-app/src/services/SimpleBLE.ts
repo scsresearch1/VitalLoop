@@ -85,9 +85,29 @@ class SimpleBLE {
     this.subscriptions.push(disconnectSub);
 
     // Data received
-    const dataSub = this.emitter.addListener('BleManagerDidUpdateValueForCharacteristic', (data: { value: number[] }) => {
-      if (this.onDataCallback && data.value) {
-        this.onDataCallback(data.value);
+    const dataSub = this.emitter.addListener('BleManagerDidUpdateValueForCharacteristic', (data: any) => {
+      try {
+        // CRITICAL: Handle bridge type mismatch - value might be in different formats
+        let value: number[] = [];
+        
+        if (Array.isArray(data)) {
+          // Native sent array directly
+          value = data;
+        } else if (data && typeof data === 'object') {
+          // Normal object format
+          if (Array.isArray(data.value)) {
+            value = data.value;
+          } else if (data.value && typeof data.value === 'object') {
+            // Convert object to array if needed
+            value = Object.values(data.value) as number[];
+          }
+        }
+        
+        if (value.length > 0 && this.onDataCallback) {
+          this.onDataCallback(value);
+        }
+      } catch (error) {
+        console.error('Error processing notification data:', error);
       }
     });
     this.subscriptions.push(dataSub);
@@ -119,22 +139,27 @@ class SimpleBLE {
 
     const scanSub = this.emitter?.addListener('BleManagerDiscoverPeripheral', (deviceData: any) => {
       try {
-        // Handle different data formats - could be array or object
+        // CRITICAL: Handle bridge type mismatch - native may send array instead of object
+        // This prevents "expected Map, got array" errors
         let device: any;
+        
         if (Array.isArray(deviceData)) {
+          // Native sent array - convert to object
           device = {
-            id: deviceData[0] || '',
-            name: deviceData[1] || undefined,
-            rssi: deviceData[2] || undefined,
+            id: deviceData[0] || deviceData[1] || '',
+            name: deviceData[1] || deviceData[2] || undefined,
+            rssi: deviceData[2] || deviceData[3] || undefined,
           };
-        } else if (deviceData && typeof deviceData === 'object') {
+          console.log('⚠️ Device data received as array, converted to object');
+        } else if (deviceData && typeof deviceData === 'object' && !Array.isArray(deviceData)) {
+          // Normal object format
           device = {
             id: deviceData.id || deviceData.peripheral || deviceData.address || '',
             name: deviceData.name || deviceData.localName || undefined,
             rssi: deviceData.rssi || undefined,
           };
         } else {
-          console.warn('Unknown device data format:', typeof deviceData);
+          console.warn('Unknown device data format:', typeof deviceData, deviceData);
           return;
         }
 
@@ -194,26 +219,63 @@ class SimpleBLE {
     console.log('🔍 Discovering services...');
     
     try {
-      const info = await BleManager.retrieveServices(deviceId);
+      let info: any;
+      
+      try {
+        info = await BleManager.retrieveServices(deviceId);
+      } catch (bridgeError: any) {
+        // CRITICAL: Handle React Native bridge type mismatch error
+        // "UnexpectedNativeTypeException: expected Map, got a array"
+        const errorMsg = bridgeError?.message || String(bridgeError);
+        if (errorMsg.includes('expected Map') || 
+            errorMsg.includes('got a array') || 
+            errorMsg.includes('UnexpectedNativeTypeException')) {
+          console.error('❌ Bridge type error detected:', errorMsg);
+          console.error('This means retrieveServices() returned array instead of object');
+          console.error('Possible causes:');
+          console.error('  1. react-native-ble-manager version bug');
+          console.error('  2. Native module serialization issue');
+          console.error('  3. Device-specific BLE stack behavior');
+          throw new Error('Bridge type mismatch: retrieveServices returned wrong format. Try reconnecting or check library version.');
+        }
+        throw bridgeError;
+      }
+
+      console.log('🔍 Raw retrieveServices result type:', typeof info, Array.isArray(info) ? 'ARRAY' : 'OBJECT');
       console.log('🔍 Raw retrieveServices result:', JSON.stringify(info, null, 2));
+
+      // CRITICAL: Handle if native returns array instead of object (bridge bug workaround)
+      if (Array.isArray(info)) {
+        console.error('❌ CRITICAL: retrieveServices returned ARRAY instead of OBJECT');
+        console.error('This is a react-native-ble-manager bridge bug');
+        console.error('Array contents:', info);
+        throw new Error('retrieveServices returned array - this is a library bug. Try reconnecting.');
+      }
 
       // Handle different return formats - could be object, array, or nested
       let services: any[] = [];
       let characteristics: any[] = [];
 
       // Case 1: Direct object with services/characteristics arrays
-      if (info && typeof info === 'object') {
+      if (info && typeof info === 'object' && !Array.isArray(info)) {
+        // Extract services
         if (Array.isArray(info.services)) {
           services = info.services;
-        } else if (info.services && typeof info.services === 'object') {
+        } else if (info.services && typeof info.services === 'object' && !Array.isArray(info.services)) {
           services = Object.values(info.services);
+        } else if (info.serviceUUIDs && Array.isArray(info.serviceUUIDs)) {
+          // Fallback: if only serviceUUIDs array exists, create service objects
+          services = info.serviceUUIDs.map((uuid: string) => ({ uuid }));
         }
 
+        // Extract characteristics
         if (Array.isArray(info.characteristics)) {
           characteristics = info.characteristics;
-        } else if (info.characteristics && typeof info.characteristics === 'object') {
+        } else if (info.characteristics && typeof info.characteristics === 'object' && !Array.isArray(info.characteristics)) {
           characteristics = Object.values(info.characteristics);
         }
+      } else if (!info || typeof info !== 'object') {
+        throw new Error(`Invalid retrieveServices return type: ${typeof info}`);
       }
 
       console.log(`🔍 Found ${services.length} services, ${characteristics.length} characteristics`);

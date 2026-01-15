@@ -137,7 +137,17 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
 
   const handleScan = async () => {
     // Check Bluetooth state before scanning
-    const currentState = bleManager.getBluetoothState();
+    // If state is 'unknown', query native state first (async)
+    let currentState = bleManager.getBluetoothState();
+    if (currentState === 'unknown') {
+      try {
+        currentState = await bleManager.checkBluetoothState();
+      } catch (error) {
+        console.error('Failed to check Bluetooth state:', error);
+        // Continue with 'unknown' state - will show appropriate error
+      }
+    }
+    
     if (currentState !== 'poweredOn') {
       Alert.alert(
         'Bluetooth Required',
@@ -262,7 +272,17 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
     }
 
     // Check Bluetooth state before connecting
-    const currentState = bleManager.getBluetoothState();
+    // If state is 'unknown', query native state first (async)
+    let currentState = bleManager.getBluetoothState();
+    if (currentState === 'unknown') {
+      try {
+        currentState = await bleManager.checkBluetoothState();
+      } catch (error) {
+        console.error('Failed to check Bluetooth state:', error);
+        // Continue with 'unknown' state - will show appropriate error
+      }
+    }
+    
     if (currentState !== 'poweredOn') {
       Alert.alert(
         'Bluetooth Required',

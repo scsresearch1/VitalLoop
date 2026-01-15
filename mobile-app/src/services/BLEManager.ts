@@ -17,7 +17,7 @@ import { buildFrame, extractOpcode, validateCRC8 } from '../utils/crc';
 import { multiPacketHandler } from './MultiPacketHandler';
 import { logger } from '../utils/Logger';
 import { requestBLEPermissions, checkBLEPermissions } from '../utils/Permissions';
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules, Platform, NativeEventEmitter } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Top-level import - no conditional patterns
@@ -75,9 +75,9 @@ class BLEManagerService {
   private connectionLock: boolean = false; // Prevent duplicate connect() calls
   private notificationsEnabled: boolean = false; // Track if notifications are enabled
   private connectionCallbacks: Array<(deviceId: string) => void> = []; // Callbacks for when connection is fully ready
-  private connectionLock: boolean = false; // Prevent duplicate connect() calls
-  private notificationsEnabled: boolean = false; // Track if notifications are enabled
-  private connectionCallbacks: Array<(deviceId: string) => void> = []; // Callbacks for when connection is fully ready
+  private bleEmitter: NativeEventEmitter | null = null; // Native event emitter for BLE events
+  private eventSubscriptions: Array<{ remove: () => void }> = []; // Store all event subscriptions for cleanup
+  private connectWatchdog: NodeJS.Timeout | null = null; // Watchdog timer to clear connection lock on timeout
 
   constructor() {
     this.connectionState = {
@@ -103,18 +103,28 @@ class BLEManagerService {
     }
     
     this.isAvailable = true;
+    
+    // Create NativeEventEmitter instance for reliable event subscription in Expo dev-client
+    if (BleManagerNative) {
+      this.bleEmitter = new NativeEventEmitter(BleManagerNative);
+      logger.log('✅ NativeEventEmitter created for BLE events');
+    } else {
+      logger.error('❌ Cannot create NativeEventEmitter - BleManagerNative is null');
+    }
+    
     this.setupListeners();
     logger.log('✅ BLE Manager initialized - native module verified');
   }
 
   private setupListeners() {
-    if (!this.isAvailable || !BleManager) {
+    if (!this.isAvailable || !this.bleEmitter) {
+      logger.warn('⚠️ Cannot setup listeners - BLE not available or emitter not created');
       return;
     }
 
     try {
       // BLE State changes - CRITICAL: Track state for gating operations
-      BleManager.addListener('BleManagerDidUpdateState', (args: { state: string }) => {
+      const stateSubscription = this.bleEmitter.addListener('BleManagerDidUpdateState', (args: { state: string }) => {
         const previousState = this.bluetoothState;
         // Normalize state from listener (may be 'on' instead of 'poweredOn')
         const normalizedState = this.normalizeBluetoothState(args.state);
@@ -141,18 +151,28 @@ class BLEManagerService {
           this.stopAutoScan();
         }
       });
+      this.eventSubscriptions.push(stateSubscription);
 
       // Characteristic notifications
-      BleManager.addListener(
+      const notificationSubscription = this.bleEmitter.addListener(
         'BleManagerDidUpdateValueForCharacteristic',
         (data: { value: number[]; characteristic: string; peripheral: string }) => {
           this.handleNotification(data.value, data.characteristic);
         }
       );
+      this.eventSubscriptions.push(notificationSubscription);
 
       // Connection events
-      BleManager.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
+      const connectSubscription = this.bleEmitter.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
         logger.log('✅ Connected to device:', data.peripheral);
+        
+        // CRITICAL: Clear watchdog timer on successful connection
+        if (this.connectWatchdog) {
+          clearTimeout(this.connectWatchdog);
+          this.connectWatchdog = null;
+          logger.log('✅ Connection watchdog cleared - connection confirmed');
+        }
+        
         this.connectionState.isConnecting = false;
         this.connectionState.isConnected = true;
         this.connectedDeviceId = data.peripheral;
@@ -188,12 +208,21 @@ class BLEManagerService {
           this.connectionCallbacks = [];
         });
       });
+      this.eventSubscriptions.push(connectSubscription);
 
-      BleManager.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
+      const disconnectSubscription = this.bleEmitter.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
         logger.log('❌ Disconnected from device:', data.peripheral);
+        
+        // CRITICAL: Clear watchdog timer on disconnect
+        if (this.connectWatchdog) {
+          clearTimeout(this.connectWatchdog);
+          this.connectWatchdog = null;
+        }
+        
         this.connectionState.isConnected = false;
         this.notificationsEnabled = false;
         this.connectionLock = false; // Release lock on disconnect
+        this.connectionState.isConnecting = false; // Also clear isConnecting flag
         
         // CRITICAL: Store device ID before clearing for reconnection
         const disconnectedDeviceId = this.connectedDeviceId || data.peripheral;
@@ -207,6 +236,9 @@ class BLEManagerService {
           this.handleUnexpectedDisconnect(disconnectedDeviceId);
         }
       });
+      this.eventSubscriptions.push(disconnectSubscription);
+      
+      logger.log(`✅ Setup ${this.eventSubscriptions.length} BLE event listeners via NativeEventEmitter`);
     } catch (error) {
       logger.error('Failed to setup BLE listeners:', error);
     }
@@ -573,6 +605,12 @@ class BLEManagerService {
     }
 
     // CRITICAL: Check Bluetooth state before scanning
+    // If state is 'unknown', query native state first
+    if (this.bluetoothState === 'unknown') {
+      logger.log('Bluetooth state unknown - querying native state...');
+      await this.checkBluetoothState();
+    }
+    
     if (!this.isBluetoothPoweredOn()) {
       const currentState = this.bluetoothState;
       const errorMsg = `Cannot scan: Bluetooth is ${currentState}. Please enable Bluetooth to scan for devices.`;
@@ -630,8 +668,12 @@ class BLEManagerService {
       logger.log(`🔍 Starting BLE scan for ${duration}ms...`);
       await BleManager.scan([], duration, true);
 
-      // Listen for discovered devices
-      const scanListener = BleManager.addListener(
+      // Listen for discovered devices using NativeEventEmitter for reliability
+      if (!this.bleEmitter) {
+        throw new Error('BLE emitter not available - cannot listen for discovered devices');
+      }
+      
+      const scanListener = this.bleEmitter.addListener(
         'BleManagerDiscoverPeripheral',
         (deviceData: any) => {
           try {
@@ -743,6 +785,12 @@ class BLEManagerService {
     }
 
     // CRITICAL: Check Bluetooth state before connecting
+    // If state is 'unknown', query native state first
+    if (this.bluetoothState === 'unknown') {
+      logger.log('Bluetooth state unknown - querying native state...');
+      await this.checkBluetoothState();
+    }
+    
     if (!this.isBluetoothPoweredOn()) {
       const currentState = this.bluetoothState;
       const errorMsg = `Cannot connect: Bluetooth is ${currentState}. Please enable Bluetooth to connect to your ring.`;
@@ -769,12 +817,21 @@ class BLEManagerService {
               resolve();
             } else if (!this.connectionState.isConnecting) {
               clearInterval(checkInterval);
+              // Clear lock if connection attempt completed without success
+              this.connectionLock = false;
               reject(new Error('Connection attempt completed but not connected'));
             }
           }, 500);
           
           setTimeout(() => {
             clearInterval(checkInterval);
+            // CRITICAL: Clear lock on timeout to prevent permanent deadlock
+            this.connectionLock = false;
+            this.connectionState.isConnecting = false;
+            if (this.connectedDeviceId === deviceId) {
+              this.connectedDeviceId = null;
+            }
+            logger.error('❌ Connection lock timeout - clearing lock to prevent deadlock');
             reject(new Error('Connection timeout - already connecting'));
           }, 5000);
         });
@@ -794,12 +851,21 @@ class BLEManagerService {
             resolve();
           } else if (!this.connectionState.isConnecting) {
             clearInterval(checkInterval);
+            // Clear lock if connection attempt completed without success
+            this.connectionLock = false;
             reject(new Error('Connection attempt completed but not connected'));
           }
         }, 500);
         
         setTimeout(() => {
           clearInterval(checkInterval);
+          // CRITICAL: Clear lock on timeout to prevent permanent deadlock
+          this.connectionLock = false;
+          this.connectionState.isConnecting = false;
+          if (this.connectedDeviceId === deviceId) {
+            this.connectedDeviceId = null;
+          }
+          logger.error('❌ Connection lock timeout - clearing lock to prevent deadlock');
           reject(new Error('Connection timeout - already connecting'));
         }, 5000);
       });
@@ -854,14 +920,49 @@ class BLEManagerService {
     this.connectionState.error = undefined;
     this.connectedDeviceId = deviceId; // Set early to prevent duplicate attempts
 
+    // CRITICAL: Set up watchdog timer to clear lock if connection confirmation doesn't arrive
+    const CONNECT_TIMEOUT_MS = 12000; // 12 seconds
+    this.connectWatchdog = setTimeout(() => {
+      if (this.connectionLock && this.connectionState.isConnecting && this.connectedDeviceId === deviceId) {
+        logger.error('❌ Connection watchdog timeout - no BleManagerConnectPeripheral event received');
+        logger.error('→ Clearing connection lock to prevent permanent deadlock');
+        
+        // Clear all connection state
+        this.connectionLock = false;
+        this.connectionState.isConnecting = false;
+        this.connectionState.error = 'Connect confirmation timeout - device did not respond';
+        this.connectedDeviceId = null;
+        
+        // Best-effort disconnect attempt
+        try {
+          if (BleManager && deviceId) {
+            BleManager.disconnect(deviceId).catch((err) => {
+              logger.warn('Watchdog disconnect attempt failed:', err);
+            });
+          }
+        } catch (err) {
+          logger.warn('Watchdog disconnect attempt error:', err);
+        }
+      }
+      this.connectWatchdog = null;
+    }, CONNECT_TIMEOUT_MS);
+
     try {
       logger.log(`🔗 Connecting to device: ${deviceId}`);
       await BleManager.connect(deviceId);
-      // Connection will be confirmed via listener
+      // Connection will be confirmed via listener (BleManagerConnectPeripheral)
+      // Watchdog will clear lock if event doesn't arrive within timeout
       logger.log('Connection request sent, waiting for confirmation...');
-      // Note: connectionLock will be released when connection completes or fails
+      // Note: connectionLock will be released when connection completes (via listener) or fails (via watchdog)
     } catch (error) {
-      this.connectionLock = false; // Release lock on error
+      // Clear watchdog on immediate error
+      if (this.connectWatchdog) {
+        clearTimeout(this.connectWatchdog);
+        this.connectWatchdog = null;
+      }
+      
+      // Release lock on error
+      this.connectionLock = false;
       this.connectionState.isConnecting = false;
       this.connectedDeviceId = null;
       this.connectionState.error = (error as Error).message;
@@ -872,73 +973,100 @@ class BLEManagerService {
 
   /**
    * Discover services and characteristics
+   * 
+   * react-native-ble-manager v12.4.4 returns PeripheralInfo:
+   * {
+   *   id: string,
+   *   services: Service[] (each with { uuid: string }),
+   *   characteristics: Characteristic[] (each with { characteristic: string, service: string, properties: {...} })
+   * }
+   * 
+   * Characteristics are NOT nested under services - they're at the same level,
+   * and each characteristic has a 'service' field indicating which service it belongs to.
    */
   private async discoverServices(deviceId: string): Promise<void> {
     try {
       logger.log('🔍 Retrieving services...');
-      const services = await BleManager.retrieveServices(deviceId);
+      const peripheralInfo = await BleManager.retrieveServices(deviceId);
       
-      // Handle case where services might be returned as array or object
-      let servicesArray: any[] = [];
-      if (Array.isArray(services)) {
-        servicesArray = services;
-      } else if (services && typeof services === 'object') {
-        // If services is an object, try to extract array from it
-        if (services.services && Array.isArray(services.services)) {
-          servicesArray = services.services;
-        } else if (services.peripheral && services.peripheral.services && Array.isArray(services.peripheral.services)) {
-          servicesArray = services.peripheral.services;
-        } else {
-          // Try to convert object to array
-          servicesArray = Object.values(services);
-        }
+      // Log the actual structure for debugging
+      logger.debug('retrieveServices returned:', JSON.stringify(peripheralInfo, null, 2));
+      
+      // Handle the actual return format from react-native-ble-manager v12.4.4
+      if (!peripheralInfo || typeof peripheralInfo !== 'object') {
+        throw new Error('retrieveServices returned invalid data');
       }
-      
+
+      // Extract services array (PeripheralInfo.services is Service[])
+      const servicesArray: Array<{ uuid: string }> = peripheralInfo.services || [];
       logger.log(`✅ Services retrieved successfully (found ${servicesArray.length} service(s))`);
       
-      // Find main service
-      const mainService = servicesArray.find((s: any) => {
-        const uuid = s?.uuid || s?.serviceUUID || '';
+      if (servicesArray.length === 0) {
+        throw new Error('No services found on device');
+      }
+
+      // Find main service by UUID
+      const mainService = servicesArray.find((s) => {
+        const uuid = s?.uuid || '';
         return uuid.toLowerCase() === GATT_SERVICE_UUID.toLowerCase();
       });
       
-      if (!mainService) {
-        throw new Error('Main service not found');
+      if (!mainService || !mainService.uuid) {
+        logger.error('Available services:', servicesArray.map(s => s.uuid));
+        throw new Error(`Main service ${GATT_SERVICE_UUID} not found`);
       }
 
-      this.serviceUUID = mainService.uuid || mainService.serviceUUID;
+      this.serviceUUID = mainService.uuid;
+      logger.log(`✅ Found main service: ${this.serviceUUID}`);
 
-      // Handle characteristics - might be array or object
-      let characteristics: any[] = [];
-      if (Array.isArray(mainService.characteristics)) {
-        characteristics = mainService.characteristics;
-      } else if (mainService.characteristics && typeof mainService.characteristics === 'object') {
-        characteristics = Object.values(mainService.characteristics);
-      }
-
-      // Find TX and RX characteristics
-      const txChar = characteristics.find(
-        (c: any) => {
-          const uuid = c?.uuid || c?.characteristicUUID || '';
-          return uuid.toLowerCase().includes('fd03') || uuid.toLowerCase() === GATT_TX_CHARACTERISTIC_UUID.toLowerCase();
-        }
-      );
+      // Extract characteristics array (PeripheralInfo.characteristics is Characteristic[])
+      // Characteristics are NOT nested - they're at the same level as services
+      const allCharacteristics: Array<{
+        characteristic: string;
+        service: string;
+        properties?: any;
+      }> = peripheralInfo.characteristics || [];
       
-      const rxChar = characteristics.find(
-        (c: any) => {
-          const uuid = c?.uuid || c?.characteristicUUID || '';
-          return uuid.toLowerCase().includes('fd04') || uuid.toLowerCase() === GATT_RX_CHARACTERISTIC_UUID.toLowerCase();
-        }
-      );
+      logger.log(`✅ Found ${allCharacteristics.length} total characteristic(s)`);
 
-      if (!txChar || !rxChar) {
-        throw new Error('TX or RX characteristic not found');
+      // Filter characteristics that belong to our main service
+      const serviceCharacteristics = allCharacteristics.filter((c) => {
+        const charServiceUUID = c?.service || '';
+        return charServiceUUID.toLowerCase() === this.serviceUUID.toLowerCase();
+      });
+      
+      logger.log(`✅ Found ${serviceCharacteristics.length} characteristic(s) for main service`);
+
+      // Find TX and RX characteristics by UUID
+      const txChar = serviceCharacteristics.find((c) => {
+        const uuid = c?.characteristic || '';
+        return uuid.toLowerCase().includes('fd03') || 
+               uuid.toLowerCase() === GATT_TX_CHARACTERISTIC_UUID.toLowerCase();
+      });
+      
+      const rxChar = serviceCharacteristics.find((c) => {
+        const uuid = c?.characteristic || '';
+        return uuid.toLowerCase().includes('fd04') || 
+               uuid.toLowerCase() === GATT_RX_CHARACTERISTIC_UUID.toLowerCase();
+      });
+
+      if (!txChar || !txChar.characteristic) {
+        logger.error('Available characteristics for service:', 
+          serviceCharacteristics.map(c => c.characteristic));
+        throw new Error(`TX characteristic (${GATT_TX_CHARACTERISTIC_UUID}) not found`);
+      }
+      
+      if (!rxChar || !rxChar.characteristic) {
+        logger.error('Available characteristics for service:', 
+          serviceCharacteristics.map(c => c.characteristic));
+        throw new Error(`RX characteristic (${GATT_RX_CHARACTERISTIC_UUID}) not found`);
       }
 
-      this.txCharacteristic = txChar.uuid || txChar.characteristicUUID;
-      this.rxCharacteristic = rxChar.uuid || rxChar.characteristicUUID;
+      this.txCharacteristic = txChar.characteristic;
+      this.rxCharacteristic = rxChar.characteristic;
 
-      logger.debug(`TX: ${this.txCharacteristic}, RX: ${this.rxCharacteristic}`);
+      logger.log(`✅ TX characteristic: ${this.txCharacteristic}`);
+      logger.log(`✅ RX characteristic: ${this.rxCharacteristic}`);
 
       // Enable notifications on RX characteristic
       await this.enableNotifications(deviceId, this.rxCharacteristic);
@@ -949,6 +1077,7 @@ class BLEManagerService {
     } catch (error) {
       this.connectionLock = false; // Release lock on error
       logger.error('Service discovery error:', error);
+      logger.error('Error details:', error instanceof Error ? error.stack : String(error));
       this.connectionState.error = (error as Error).message;
       throw error; // Re-throw so caller knows it failed
     }
@@ -1183,10 +1312,19 @@ class BLEManagerService {
   }
 
   /**
-   * Get current Bluetooth state
+   * Get current Bluetooth state (synchronous)
+   * Returns cached state, which may be 'unknown' if not yet checked
    */
   getBluetoothState(): string {
     return this.bluetoothState;
+  }
+
+  /**
+   * Get current Bluetooth state (async - always queries native)
+   * Use this when you need to ensure state is current before blocking operations
+   */
+  async getBluetoothStateAsync(): Promise<string> {
+    return await this.checkBluetoothState();
   }
 
   /**
@@ -1306,6 +1444,22 @@ class BLEManagerService {
     this.autoScanEnabled = false;
     this.autoConnectEnabled = false;
     
+    // CRITICAL: Remove all event subscriptions
+    this.eventSubscriptions.forEach(subscription => {
+      try {
+        subscription.remove();
+      } catch (error) {
+        logger.warn('Error removing event subscription:', error);
+      }
+    });
+    this.eventSubscriptions = [];
+    
+    // Clear watchdog timer
+    if (this.connectWatchdog) {
+      clearTimeout(this.connectWatchdog);
+      this.connectWatchdog = null;
+    }
+    
     if (this.isAvailable && BleManager) {
       try {
         BleManager.destroy();
@@ -1412,6 +1566,13 @@ export const bleManager = {
       return 'unknown';
     }
     return _bleManagerInstance.getBluetoothState();
+  },
+  
+  async getBluetoothStateAsync() {
+    if (!_bleManagerInstance) {
+      return 'unknown';
+    }
+    return await _bleManagerInstance.getBluetoothStateAsync();
   },
   
   destroy() {

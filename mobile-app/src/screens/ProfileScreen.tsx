@@ -3,13 +3,14 @@
  * User profile and settings
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
@@ -24,12 +25,59 @@ import {
   Zap,
   Target,
   Award,
+  Bluetooth,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react-native';
 import CinematicCard from '../components/styled/CinematicCard';
 import GlassCard from '../components/styled/GlassCard';
 import { colors } from '../theme/colors';
+import { bleManager } from '../services/BLEManager';
 
-export default function ProfileScreen() {
+interface ProfileScreenProps {
+  onNavigateToScan?: () => void;
+}
+
+export default function ProfileScreen({ onNavigateToScan }: ProfileScreenProps) {
+  const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectedDeviceName, setConnectedDeviceName] = useState<string | null>(null);
+  useEffect(() => {
+    checkConnectionStatus();
+    // Check connection status periodically
+    const interval = setInterval(checkConnectionStatus, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const checkConnectionStatus = () => {
+    const state = bleManager.getConnectionState();
+    setIsConnected(state.isConnected);
+    if (state.isConnected) {
+      const deviceId = bleManager.getConnectedDeviceId();
+      setConnectedDeviceName(deviceId || 'Ring Device');
+    } else {
+      setConnectedDeviceName(null);
+    }
+  };
+
+  const handleConnectRing = () => {
+    if (onNavigateToScan) {
+      onNavigateToScan();
+    }
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      setIsConnecting(true);
+      await bleManager.disconnect(true); // Clear stored device
+      checkConnectionStatus();
+    } catch (error) {
+      console.error('Failed to disconnect:', error);
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
   const userName = 'John Doe';
   const userEmail = 'john.doe@example.com';
   const initials = userName.split(' ').map(n => n[0]).join('').toUpperCase();
@@ -90,6 +138,56 @@ export default function ProfileScreen() {
             <Text style={styles.memberSince}>Member since Jan 2024</Text>
           </View>
         </View>
+
+        {/* Ring Connection Card */}
+        <GlassCard variant="medium" style={styles.connectionCard}>
+          <View style={styles.connectionHeader}>
+            <Bluetooth size={24} color={isConnected ? colors.green[400] : colors.slate[400]} />
+            <Text style={styles.connectionTitle}>Ring Connection</Text>
+            {isConnected ? (
+              <CheckCircle size={20} color={colors.green[400]} />
+            ) : (
+              <XCircle size={20} color={colors.slate[400]} />
+            )}
+          </View>
+          
+          {isConnected ? (
+            <View style={styles.connectedState}>
+              <Text style={styles.connectedText}>
+                Connected to {connectedDeviceName || 'Ring Device'}
+              </Text>
+              <TouchableOpacity
+                style={styles.disconnectButton}
+                onPress={handleDisconnect}
+                disabled={isConnecting}
+              >
+                {isConnecting ? (
+                  <ActivityIndicator size="small" color={colors.white} />
+                ) : (
+                  <Text style={styles.disconnectButtonText}>Disconnect</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.disconnectedState}>
+              <Text style={styles.disconnectedText}>
+                No ring connected. Connect your ring to sync health data.
+              </Text>
+              <TouchableOpacity
+                style={styles.connectButton}
+                onPress={handleConnectRing}
+              >
+                <LinearGradient
+                  colors={colors.gradients.primary as [string, string, string]}
+                  style={styles.connectButtonGradient}
+                >
+                  <Bluetooth size={20} color={colors.white} />
+                  <Text style={styles.connectButtonText}>Connect Ring</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          )}
+        </GlassCard>
 
         {/* Trophy Case */}
         <GlassCard variant="medium" style={styles.trophyCard}>
@@ -208,6 +306,75 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.white,
     opacity: 0.5,
+  },
+  connectionCard: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 20,
+  },
+  connectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 16,
+  },
+  connectionTitle: {
+    flex: 1,
+    fontSize: 24,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  connectedState: {
+    alignItems: 'center',
+  },
+  connectedText: {
+    fontSize: 16,
+    color: colors.green[400],
+    marginBottom: 12,
+    fontWeight: '600',
+  },
+  disconnectButton: {
+    backgroundColor: colors.red[500] + '20',
+    borderWidth: 1,
+    borderColor: colors.red[400],
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  disconnectButtonText: {
+    color: colors.red[400],
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  disconnectedState: {
+    alignItems: 'center',
+  },
+  disconnectedText: {
+    fontSize: 14,
+    color: colors.slate[400],
+    textAlign: 'center',
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  connectButton: {
+    width: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  connectButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+  },
+  connectButtonText: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: '700',
   },
   trophyCard: {
     marginHorizontal: 16,

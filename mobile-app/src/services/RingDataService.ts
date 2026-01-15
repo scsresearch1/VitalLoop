@@ -6,6 +6,7 @@
 import { bleManager } from './BLEManager';
 import { dataParser } from './DataParser';
 import { multiPacketHandler } from './MultiPacketHandler';
+import { dataStorageService } from './DataStorageService';
 import { Opcode } from '../types/ble';
 import { RingData, HeartRateData, SleepData, BloodPressureData, HRVData, ActivityData } from '../models/RingData';
 
@@ -89,6 +90,16 @@ class RingDataService {
       }
     } catch (error) {
       console.error('Error fetching ring data:', error);
+    }
+
+    // Save fetched data to storage
+    if (data && Object.keys(data).length > 0) {
+      try {
+        await dataStorageService.saveRingData(data);
+      } catch (error) {
+        console.error('Failed to save data to storage:', error);
+        // Continue even if save fails
+      }
     }
 
     return data;
@@ -209,9 +220,15 @@ class RingDataService {
     await bleManager.sendCommand(Opcode.START_HEART_RATE);
 
     // Register listener for real-time notifications (opcode 0x1E)
-    const unsubscribe = bleManager.onNotification(Opcode.REAL_TIME_HEART_RATE, (data) => {
+    const unsubscribe = bleManager.onNotification(Opcode.REAL_TIME_HEART_RATE, async (data) => {
       const hrData = dataParser.parseRealTimeHeartRate(data);
       if (hrData) {
+        // Save to storage automatically
+        try {
+          await dataStorageService.addHeartRateData(hrData);
+        } catch (error) {
+          console.error('Failed to save heart rate to storage:', error);
+        }
         onHeartRate(hrData);
       }
     });
@@ -225,6 +242,20 @@ class RingDataService {
         console.error('Failed to stop heart rate:', error);
       }
     };
+  }
+
+  /**
+   * Load stored data from local storage
+   */
+  async loadStoredData(): Promise<Partial<RingData>> {
+    return await dataStorageService.loadRingData();
+  }
+
+  /**
+   * Update stored data (merge with existing)
+   */
+  async updateStoredData(updates: Partial<RingData>): Promise<void> {
+    await dataStorageService.updateRingData(updates);
   }
 
   /**

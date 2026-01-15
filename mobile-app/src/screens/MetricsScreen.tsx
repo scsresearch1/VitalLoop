@@ -28,8 +28,24 @@ export default function MetricsScreen() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // Load stored data first
+    loadStoredData();
+    // Then try to fetch fresh data if connected
     loadData();
   }, []);
+
+  /**
+   * Load stored data from local storage
+   */
+  const loadStoredData = async () => {
+    try {
+      const storedData = await ringDataService.loadStoredData();
+      setRingData(storedData);
+      console.log('✅ Loaded stored metrics data from local storage');
+    } catch (error) {
+      console.error('Failed to load stored metrics data:', error);
+    }
+  };
 
   const loadData = async () => {
     setIsLoading(true);

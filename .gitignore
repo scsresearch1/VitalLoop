@@ -1,3 +1,16 @@
-﻿# Expo
+# Expo
 .expo/
+
+# Web Prototype (not part of mobile app)
+web-prototype/
+
+# Documentation files (not part of app code)
+*.md
+
+# Code quality config (not part of app code)
+.code-quality-config/
+
+# Other non-app files
+new.txt
+Parameters.txt
 

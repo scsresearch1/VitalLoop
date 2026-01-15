@@ -175,6 +175,7 @@ export default function App() {
       
       // Now initialize BLE Manager in background (non-blocking)
       // This allows the app UI to show immediately
+      // NOTE: Auto-connect is DISABLED - user must connect from Profile screen
       bleManager.initialize().then(() => {
         // Check if already connected to a device (e.g., from previous session)
         const connectionState = bleManager.getConnectionState();
@@ -190,13 +191,9 @@ export default function App() {
           });
         }
         
-        // Enable automatic scanning and connection AFTER UI is ready
-        // Small delay to ensure UI has rendered
-        setTimeout(() => {
-          console.log('🔄 Enabling automatic scan and connect...');
-          bleManager.enableAutoScanAndConnect();
-          console.log('✅ Auto-scan enabled - will automatically find and connect to Ring');
-        }, 500); // 500ms delay to let UI render first
+        // DO NOT enable auto-scan/connect automatically
+        // User must manually connect from Profile screen
+        console.log('✅ BLE Manager initialized - ready for manual connection');
       }).catch((error) => {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         console.error('Failed to initialize BLE Manager:', error);
@@ -221,6 +218,8 @@ export default function App() {
 
   const handleDeviceConnected = (deviceId: string) => {
     setConnectedDeviceId(deviceId);
+    // Navigate back to dashboard after connection
+    setActiveTab('dashboard');
   };
 
   const handleDisconnect = async () => {
@@ -234,10 +233,8 @@ export default function App() {
   };
 
   const renderScreen = () => {
-    if (!connectedDeviceId) {
-      return <DeviceScanScreen onDeviceConnected={handleDeviceConnected} />;
-    }
-
+    // Always show main app screens (Dashboard, Metrics, etc.)
+    // Connection happens from Profile screen
     switch (activeTab) {
       case 'dashboard':
         return <DashboardScreen />;
@@ -248,7 +245,9 @@ export default function App() {
       case 'insights':
         return <InsightsScreen />;
       case 'profile':
-        return <ProfileScreen />;
+        return <ProfileScreen onNavigateToScan={() => setActiveTab('scan')} />;
+      case 'scan':
+        return <DeviceScanScreen onDeviceConnected={handleDeviceConnected} />;
       default:
         return <DashboardScreen />;
     }
@@ -321,9 +320,7 @@ export default function App() {
       <View style={styles.container}>
         <StatusBar style="light" />
         {renderScreen()}
-        {connectedDeviceId && (
-          <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
-        )}
+        <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
       </View>
     </ErrorBoundary>
   );

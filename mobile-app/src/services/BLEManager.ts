@@ -633,45 +633,79 @@ class BLEManagerService {
       // Listen for discovered devices
       const scanListener = BleManager.addListener(
         'BleManagerDiscoverPeripheral',
-        (device: BLEDevice) => {
-          // Filter for Ring devices (check name patterns or service UUID)
-          // Support various Ring naming patterns: Ring, R01-R03, R11C_*, etc.
-          const deviceName = device.name || '';
-          const isRingDevice = 
-            deviceName.toLowerCase().includes('ring') ||
-            /^R\d{2}/i.test(deviceName) || // Matches R01, R02, R03, R11, etc.
-            deviceName.includes('R01') ||
-            deviceName.includes('R02') ||
-            deviceName.includes('R03') ||
-            deviceName.includes('R11') || // Matches R11C_B803 pattern
-            device.advertising?.serviceUUIDs?.includes(GATT_SERVICE_UUID);
+        (deviceData: any) => {
+          try {
+            // Handle case where device might come as array or object
+            let device: BLEDevice;
+            if (Array.isArray(deviceData)) {
+              // If array, try to extract device info
+              logger.warn('Device data received as array, attempting to parse...');
+              device = {
+                id: deviceData[0] || '',
+                name: deviceData[1] || undefined,
+                rssi: deviceData[2] || undefined,
+              };
+            } else if (deviceData && typeof deviceData === 'object') {
+              // Normalize device object
+              device = {
+                id: deviceData.id || deviceData.peripheral || deviceData.address || '',
+                name: deviceData.name || deviceData.localName || undefined,
+                rssi: deviceData.rssi || undefined,
+                advertising: deviceData.advertising || deviceData.advertisementData || undefined,
+              };
+            } else {
+              logger.error('Invalid device data format received:', typeof deviceData);
+              return;
+            }
 
-          if (isRingDevice) {
-            // Check if device already in list (avoid duplicates)
-            const alreadyFound = foundDevices.some(d => d.id === device.id);
-            if (!alreadyFound) {
-              foundDevices.push(device);
-              logger.log(`🔔 Ring device discovered: ${device.name || device.id}`);
+            if (!device.id) {
+              logger.warn('Device discovered but missing ID, skipping');
+              return;
             }
-            
-            // Auto-connect ONLY if auto-connect is enabled AND this is NOT a manual scan
-            // Manual scans should let user choose which device to connect to
-            if (this.autoConnectEnabled && 
-                stopAutoScan === false && // Only auto-connect if this is an auto-scan
-                !this.connectionState.isConnected && 
-                !this.connectionState.isConnecting && 
-                device.id) {
-              logger.log(`🔗 Auto-connecting to Ring device: ${device.name || device.id}`);
-              // Stop auto-scanning once we're connecting
-              this.stopAutoScan();
-              this.connect(device.id).catch(error => {
-                logger.error('Auto-connect failed:', error);
-                // Resume auto-scan if connection failed
-                if (this.autoScanEnabled && !this.connectionState.isConnected) {
-                  setTimeout(() => this.startAutoScan(), 3000);
-                }
-              });
+
+            // Filter for Ring devices (check name patterns or service UUID)
+            // Support various Ring naming patterns: Ring, R01-R03, R11C_*, etc.
+            const deviceName = device.name || '';
+            const serviceUUIDs = device.advertising?.serviceUUIDs || [];
+            const isRingDevice = 
+              deviceName.toLowerCase().includes('ring') ||
+              /^R\d{2}/i.test(deviceName) || // Matches R01, R02, R03, R11, etc.
+              deviceName.includes('R01') ||
+              deviceName.includes('R02') ||
+              deviceName.includes('R03') ||
+              deviceName.includes('R11') || // Matches R11C_B803 pattern
+              (Array.isArray(serviceUUIDs) && serviceUUIDs.includes(GATT_SERVICE_UUID));
+
+            if (isRingDevice) {
+              // Check if device already in list (avoid duplicates)
+              const alreadyFound = foundDevices.some(d => d.id === device.id);
+              if (!alreadyFound) {
+                foundDevices.push(device);
+                logger.log(`🔔 Ring device discovered: ${device.name || device.id}`);
+              }
+              
+              // Auto-connect ONLY if auto-connect is enabled AND this is NOT a manual scan
+              // Manual scans should let user choose which device to connect to
+              if (this.autoConnectEnabled && 
+                  stopAutoScan === false && // Only auto-connect if this is an auto-scan
+                  !this.connectionState.isConnected && 
+                  !this.connectionState.isConnecting && 
+                  device.id) {
+                logger.log(`🔗 Auto-connecting to Ring device: ${device.name || device.id}`);
+                // Stop auto-scanning once we're connecting
+                this.stopAutoScan();
+                this.connect(device.id).catch(error => {
+                  logger.error('Auto-connect failed:', error);
+                  // Resume auto-scan if connection failed
+                  if (this.autoScanEnabled && !this.connectionState.isConnected) {
+                    setTimeout(() => this.startAutoScan(), 3000);
+                  }
+                });
+              }
             }
+          } catch (error) {
+            logger.error('Error processing discovered device:', error);
+            // Continue scanning even if one device fails to process
           }
         }
       );
@@ -843,37 +877,71 @@ class BLEManagerService {
     try {
       logger.log('🔍 Retrieving services...');
       const services = await BleManager.retrieveServices(deviceId);
-      logger.log(`✅ Services retrieved successfully (found ${services.length} service(s))`);
+      
+      // Handle case where services might be returned as array or object
+      let servicesArray: any[] = [];
+      if (Array.isArray(services)) {
+        servicesArray = services;
+      } else if (services && typeof services === 'object') {
+        // If services is an object, try to extract array from it
+        if (services.services && Array.isArray(services.services)) {
+          servicesArray = services.services;
+        } else if (services.peripheral && services.peripheral.services && Array.isArray(services.peripheral.services)) {
+          servicesArray = services.peripheral.services;
+        } else {
+          // Try to convert object to array
+          servicesArray = Object.values(services);
+        }
+      }
+      
+      logger.log(`✅ Services retrieved successfully (found ${servicesArray.length} service(s))`);
       
       // Find main service
-      const mainService = services.find((s: any) => s.uuid.toLowerCase() === GATT_SERVICE_UUID.toLowerCase());
+      const mainService = servicesArray.find((s: any) => {
+        const uuid = s?.uuid || s?.serviceUUID || '';
+        return uuid.toLowerCase() === GATT_SERVICE_UUID.toLowerCase();
+      });
       
       if (!mainService) {
         throw new Error('Main service not found');
       }
 
-      this.serviceUUID = mainService.uuid;
+      this.serviceUUID = mainService.uuid || mainService.serviceUUID;
+
+      // Handle characteristics - might be array or object
+      let characteristics: any[] = [];
+      if (Array.isArray(mainService.characteristics)) {
+        characteristics = mainService.characteristics;
+      } else if (mainService.characteristics && typeof mainService.characteristics === 'object') {
+        characteristics = Object.values(mainService.characteristics);
+      }
 
       // Find TX and RX characteristics
-      const txChar = mainService.characteristics?.find(
-        (c: any) => c.uuid.toLowerCase().includes('fd03') || c.uuid.toLowerCase() === GATT_TX_CHARACTERISTIC_UUID.toLowerCase()
+      const txChar = characteristics.find(
+        (c: any) => {
+          const uuid = c?.uuid || c?.characteristicUUID || '';
+          return uuid.toLowerCase().includes('fd03') || uuid.toLowerCase() === GATT_TX_CHARACTERISTIC_UUID.toLowerCase();
+        }
       );
       
-      const rxChar = mainService.characteristics?.find(
-        (c: any) => c.uuid.toLowerCase().includes('fd04') || c.uuid.toLowerCase() === GATT_RX_CHARACTERISTIC_UUID.toLowerCase()
+      const rxChar = characteristics.find(
+        (c: any) => {
+          const uuid = c?.uuid || c?.characteristicUUID || '';
+          return uuid.toLowerCase().includes('fd04') || uuid.toLowerCase() === GATT_RX_CHARACTERISTIC_UUID.toLowerCase();
+        }
       );
 
       if (!txChar || !rxChar) {
         throw new Error('TX or RX characteristic not found');
       }
 
-      this.txCharacteristic = txChar.uuid;
-      this.rxCharacteristic = rxChar.uuid;
+      this.txCharacteristic = txChar.uuid || txChar.characteristicUUID;
+      this.rxCharacteristic = rxChar.uuid || rxChar.characteristicUUID;
 
       logger.debug(`TX: ${this.txCharacteristic}, RX: ${this.rxCharacteristic}`);
 
       // Enable notifications on RX characteristic
-      await this.enableNotifications(deviceId, rxChar.uuid);
+      await this.enableNotifications(deviceId, this.rxCharacteristic);
 
       logger.log('✅ Services discovered and notifications enabled');
       // Release connection lock now that everything is set up

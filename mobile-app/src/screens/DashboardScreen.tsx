@@ -22,7 +22,7 @@ import Animated, {
   withRepeat,
   withTiming,
 } from 'react-native-reanimated';
-import { Heart, Activity, Moon, TrendingUp } from 'lucide-react-native';
+import { Heart, Activity, Moon, TrendingUp, Bluetooth, Radio } from 'lucide-react-native';
 import { bleManager } from '../services/BLEManager';
 import { dataParser } from '../services/DataParser';
 import { ringDataService } from '../services/RingDataService';
@@ -41,22 +41,106 @@ export default function DashboardScreen() {
   const [ringData, setRingData] = useState<Partial<RingData>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
+  const [isCollectingData, setIsCollectingData] = useState(false);
+  
+  // Animation for pulsing indicator
+  const pulseScale = useSharedValue(1);
+  const pulseOpacity = useSharedValue(1);
 
   useEffect(() => {
+    // Load stored data first (shows immediately)
+    loadStoredData();
+    
+    // Check connection status periodically
+    const checkInterval = setInterval(() => {
+      checkConnection();
+    }, 2000);
+    
     checkConnection();
+    
+    return () => {
+      clearInterval(checkInterval);
+      stopHeartRateMonitoring();
+    };
+  }, []);
+
+  // Pulse animation for real-time data collection indicator
+  useEffect(() => {
+    if (isConnected && isCollectingData) {
+      pulseScale.value = withRepeat(
+        withTiming(1.2, { duration: 1000 }),
+        -1,
+        true
+      );
+      pulseOpacity.value = withRepeat(
+        withTiming(0.3, { duration: 1000 }),
+        -1,
+        true
+      );
+    } else {
+      pulseScale.value = 1;
+      pulseOpacity.value = 1;
+    }
+  }, [isConnected, isCollectingData]);
+
+  const pulseStyle = useAnimatedStyle(() => {
+    return {
+      transform: [{ scale: pulseScale.value }],
+      opacity: pulseOpacity.value,
+    };
+  });
+
+  useEffect(() => {
+    // When connection state changes, fetch fresh data
     if (isConnected) {
       loadInitialData();
       startHeartRateMonitoring();
-    }
-    return () => {
+    } else {
       stopHeartRateMonitoring();
-    };
+    }
   }, [isConnected]);
 
   const checkConnection = () => {
     const state = bleManager.getConnectionState();
     setIsConnected(state.isConnected);
+    const deviceId = bleManager.getConnectedDeviceId();
+    setConnectedDeviceId(deviceId);
+    
+    // Check if we're receiving real-time data
+    // Consider collecting if we have recent heart rate data (within last 10 seconds)
+    const hasRecentData = ringData.currentHeartRate && 
+      (Date.now() - ringData.currentHeartRate.timestamp) < 10000;
+    setIsCollectingData(state.isConnected && hasRecentData);
+    
     setIsLoading(false);
+  };
+
+  /**
+   * Load stored data from local storage (for offline viewing)
+   */
+  const loadStoredData = async () => {
+    try {
+      const storedData = await ringDataService.loadStoredData();
+      setRingData(storedData);
+      console.log('✅ Loaded stored data from local storage');
+    } catch (error) {
+      console.error('Failed to load stored data:', error);
+      // Set default empty data
+      setRingData({
+        deviceInfo: {
+          batteryLevel: 0,
+          isCharging: false,
+        },
+        heartRateHistory: [],
+        sleepData: [],
+        bloodPressure: [],
+        hrvData: [],
+        activity: [],
+        sportSessions: [],
+        lastUpdated: Date.now(),
+      });
+    }
   };
 
   const loadInitialData = async () => {
@@ -79,9 +163,11 @@ export default function DashboardScreen() {
 
     try {
       await bleManager.sendCommand(Opcode.START_HEART_RATE);
+      setIsCollectingData(true);
       bleManager.onNotification(Opcode.REAL_TIME_HEART_RATE, (data) => {
         const hrData = dataParser.parseRealTimeHeartRate(data);
         if (hrData) {
+          setIsCollectingData(true); // Confirm we're receiving data
           setRingData(prev => ({
             ...prev,
             currentHeartRate: hrData,
@@ -91,6 +177,7 @@ export default function DashboardScreen() {
       });
     } catch (error) {
       console.error('Failed to start heart rate monitoring:', error);
+      setIsCollectingData(false);
     }
   };
 
@@ -98,8 +185,10 @@ export default function DashboardScreen() {
     if (!isConnected) return;
     try {
       await bleManager.sendCommand(Opcode.STOP_HEART_RATE);
+      setIsCollectingData(false);
     } catch (error) {
       console.error('Failed to stop heart rate monitoring:', error);
+      setIsCollectingData(false);
     }
   };
 
@@ -186,21 +275,68 @@ export default function DashboardScreen() {
     );
   }
 
-  if (!isConnected) {
-    return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.errorText}>Not Connected</Text>
-        <Text style={styles.errorSubtext}>Please connect to a Ring device</Text>
-      </View>
-    );
-  }
-
   return (
     <ScrollView 
       style={styles.container}
       contentContainerStyle={styles.contentContainer}
       showsVerticalScrollIndicator={false}
     >
+      {/* Connection Status Indicator */}
+      <Animated.View entering={FadeInDown.duration(600)}>
+        <GlassCard variant="medium" style={styles.connectionIndicator}>
+          <View style={styles.connectionRow}>
+            <View style={styles.connectionLeft}>
+              <Bluetooth 
+                size={20} 
+                color={isConnected ? colors.green[400] : colors.slate[400]} 
+              />
+              <View style={styles.connectionTextContainer}>
+                <Text style={styles.connectionStatus}>
+                  {isConnected ? 'Connected' : 'Not Connected'}
+                </Text>
+                {isConnected && connectedDeviceId && (
+                  <Text style={styles.deviceId}>
+                    {connectedDeviceId.length > 20 
+                      ? `${connectedDeviceId.substring(0, 17)}...` 
+                      : connectedDeviceId}
+                  </Text>
+                )}
+              </View>
+            </View>
+            
+            {isConnected && (
+              <View style={[
+                styles.realtimeIndicator,
+                {
+                  backgroundColor: colors.green[500] + '15',
+                  borderWidth: 1,
+                  borderColor: colors.green[400] + '30',
+                }
+              ]}>
+                {isCollectingData && (
+                  <Animated.View style={[styles.pulseDot, pulseStyle]} />
+                )}
+                <Radio size={16} color={isCollectingData ? colors.green[400] : colors.slate[400]} />
+                <Text style={[
+                  styles.realtimeText,
+                  { color: isCollectingData ? colors.green[400] : colors.slate[400] }
+                ]}>
+                  {isCollectingData ? 'Live' : 'Idle'}
+                </Text>
+              </View>
+            )}
+          </View>
+          
+          {isConnected && isCollectingData && (
+            <View style={styles.collectingBanner}>
+              <Text style={styles.collectingText}>
+                📊 Collecting real-time data from ring...
+              </Text>
+            </View>
+          )}
+        </GlassCard>
+      </Animated.View>
+
       {/* Daily Focus Hero */}
       <DailyFocusHero userName="John" />
 
@@ -368,5 +504,66 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.white,
     fontWeight: '600',
+  },
+  connectionIndicator: {
+    marginBottom: 16,
+    padding: 16,
+  },
+  connectionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  connectionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  connectionTextContainer: {
+    flex: 1,
+  },
+  connectionStatus: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.white,
+    marginBottom: 2,
+  },
+  deviceId: {
+    fontSize: 12,
+    color: colors.slate[400],
+    fontFamily: 'monospace',
+  },
+  realtimeIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  pulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.green[400],
+  },
+  realtimeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  collectingBanner: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.white + '10',
+  },
+  collectingText: {
+    fontSize: 13,
+    color: colors.cyan[400],
+    fontWeight: '500',
+    textAlign: 'center',
   },
 });

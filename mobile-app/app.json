@@ -38,7 +38,6 @@
     },
     "plugins": [
       "expo-dev-client",
-      "react-native-ble-manager",
       "./withProGuardRules.js",
       [
         "expo-build-properties",

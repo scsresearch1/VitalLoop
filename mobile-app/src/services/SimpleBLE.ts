@@ -117,14 +117,42 @@ class SimpleBLE {
     // Scan for new devices
     await BleManager.scan([], 10000, true);
 
-    const scanSub = this.emitter?.addListener('BleManagerDiscoverPeripheral', (device: any) => {
-      const name = (device.name || '').toLowerCase();
-      if (name.includes('ring') || name.includes('r11') || name.includes('r01') || name.includes('r02') || name.includes('r03')) {
-        const exists = devices.some(d => d.id === device.id);
-        if (!exists) {
-          devices.push({ id: device.id, name: device.name, rssi: device.rssi });
-          console.log('🔔 Found:', device.name || device.id);
+    const scanSub = this.emitter?.addListener('BleManagerDiscoverPeripheral', (deviceData: any) => {
+      try {
+        // Handle different data formats - could be array or object
+        let device: any;
+        if (Array.isArray(deviceData)) {
+          device = {
+            id: deviceData[0] || '',
+            name: deviceData[1] || undefined,
+            rssi: deviceData[2] || undefined,
+          };
+        } else if (deviceData && typeof deviceData === 'object') {
+          device = {
+            id: deviceData.id || deviceData.peripheral || deviceData.address || '',
+            name: deviceData.name || deviceData.localName || undefined,
+            rssi: deviceData.rssi || undefined,
+          };
+        } else {
+          console.warn('Unknown device data format:', typeof deviceData);
+          return;
         }
+
+        if (!device.id) {
+          console.warn('Device missing ID, skipping');
+          return;
+        }
+
+        const name = (device.name || '').toLowerCase();
+        if (name.includes('ring') || name.includes('r11') || name.includes('r01') || name.includes('r02') || name.includes('r03')) {
+          const exists = devices.some(d => d.id === device.id);
+          if (!exists) {
+            devices.push({ id: device.id, name: device.name, rssi: device.rssi });
+            console.log('🔔 Found:', device.name || device.id);
+          }
+        }
+      } catch (error) {
+        console.error('Error processing discovered device:', error);
       }
     });
     this.subscriptions.push(scanSub);
@@ -164,42 +192,87 @@ class SimpleBLE {
 
   private async discoverServices(deviceId: string): Promise<void> {
     console.log('🔍 Discovering services...');
-    const info = await BleManager.retrieveServices(deviceId);
+    
+    try {
+      const info = await BleManager.retrieveServices(deviceId);
+      console.log('🔍 Raw retrieveServices result:', JSON.stringify(info, null, 2));
 
-    // Find service
-    const services = info.services || [];
-    const service = services.find((s: any) => s.uuid?.toLowerCase() === SERVICE_UUID.toLowerCase());
+      // Handle different return formats - could be object, array, or nested
+      let services: any[] = [];
+      let characteristics: any[] = [];
 
-    if (!service) {
-      throw new Error('Ring service not found');
+      // Case 1: Direct object with services/characteristics arrays
+      if (info && typeof info === 'object') {
+        if (Array.isArray(info.services)) {
+          services = info.services;
+        } else if (info.services && typeof info.services === 'object') {
+          services = Object.values(info.services);
+        }
+
+        if (Array.isArray(info.characteristics)) {
+          characteristics = info.characteristics;
+        } else if (info.characteristics && typeof info.characteristics === 'object') {
+          characteristics = Object.values(info.characteristics);
+        }
+      }
+
+      console.log(`🔍 Found ${services.length} services, ${characteristics.length} characteristics`);
+
+      // Find service
+      const service = services.find((s: any) => {
+        const uuid = s?.uuid || s?.serviceUUID || '';
+        return uuid.toLowerCase() === SERVICE_UUID.toLowerCase();
+      });
+
+      if (!service) {
+        console.error('Available services:', services.map(s => s?.uuid || s?.serviceUUID || 'unknown'));
+        throw new Error(`Ring service ${SERVICE_UUID} not found`);
+      }
+
+      this.serviceUUID = service.uuid || service.serviceUUID;
+      console.log('✅ Service found:', this.serviceUUID);
+
+      // Find characteristics that belong to this service
+      const serviceCharacteristics = characteristics.filter((c: any) => {
+        const charService = c?.service || c?.serviceUUID || '';
+        return charService.toLowerCase() === this.serviceUUID.toLowerCase();
+      });
+
+      console.log(`🔍 Found ${serviceCharacteristics.length} characteristics for service`);
+
+      const tx = serviceCharacteristics.find((c: any) => {
+        const uuid = c?.characteristic || c?.uuid || c?.characteristicUUID || '';
+        return uuid.toLowerCase().includes('fd03') || uuid.toLowerCase() === TX_CHAR.toLowerCase();
+      });
+
+      const rx = serviceCharacteristics.find((c: any) => {
+        const uuid = c?.characteristic || c?.uuid || c?.characteristicUUID || '';
+        return uuid.toLowerCase().includes('fd04') || uuid.toLowerCase() === RX_CHAR.toLowerCase();
+      });
+
+      if (!tx) {
+        console.error('Available characteristics:', serviceCharacteristics.map(c => c?.characteristic || c?.uuid || 'unknown'));
+        throw new Error(`TX characteristic not found (looking for ${TX_CHAR})`);
+      }
+
+      if (!rx) {
+        console.error('Available characteristics:', serviceCharacteristics.map(c => c?.characteristic || c?.uuid || 'unknown'));
+        throw new Error(`RX characteristic not found (looking for ${RX_CHAR})`);
+      }
+
+      this.txChar = tx.characteristic || tx.uuid || tx.characteristicUUID;
+      this.rxChar = rx.characteristic || rx.uuid || rx.characteristicUUID;
+      console.log('✅ TX:', this.txChar);
+      console.log('✅ RX:', this.rxChar);
+
+      // Enable notifications
+      await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
+      console.log('✅ Notifications enabled - ready to receive data');
+    } catch (error: any) {
+      console.error('❌ Service discovery failed:', error);
+      console.error('Error details:', error.message, error.stack);
+      throw error;
     }
-
-    this.serviceUUID = service.uuid;
-    console.log('✅ Service found:', this.serviceUUID);
-
-    // Find characteristics
-    const characteristics = info.characteristics || [];
-    const tx = characteristics.find((c: any) => 
-      c.service?.toLowerCase() === SERVICE_UUID.toLowerCase() && 
-      (c.characteristic?.toLowerCase().includes('fd03') || c.characteristic?.toLowerCase() === TX_CHAR.toLowerCase())
-    );
-    const rx = characteristics.find((c: any) => 
-      c.service?.toLowerCase() === SERVICE_UUID.toLowerCase() && 
-      (c.characteristic?.toLowerCase().includes('fd04') || c.characteristic?.toLowerCase() === RX_CHAR.toLowerCase())
-    );
-
-    if (!tx || !rx) {
-      throw new Error('TX or RX characteristic not found');
-    }
-
-    this.txChar = tx.characteristic;
-    this.rxChar = rx.characteristic;
-    console.log('✅ TX:', this.txChar);
-    console.log('✅ RX:', this.rxChar);
-
-    // Enable notifications
-    await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
-    console.log('✅ Notifications enabled - ready to receive data');
   }
 
   onData(callback: (data: number[]) => void): void {

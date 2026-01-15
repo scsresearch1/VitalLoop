@@ -30,6 +30,9 @@
         "autoIncrement": true,
         "credentialsSource": "remote",
         "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "NODE_ENV": "production"
       }
     }
   },

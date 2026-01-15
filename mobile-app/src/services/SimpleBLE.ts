@@ -47,19 +47,18 @@ class SimpleBLE {
       throw new Error('BLE native module not available');
     }
 
-    // CRITICAL: Check native module version compatibility
+    // Verify native module has expected methods (v8.0.6 API)
     try {
-      // Verify native module has expected methods
       const requiredMethods = ['start', 'scan', 'connect', 'retrieveServices', 'startNotification'];
       const missingMethods = requiredMethods.filter(method => typeof BleManager[method] !== 'function');
       
       if (missingMethods.length > 0) {
         console.error('❌ Native module missing methods:', missingMethods);
-        throw new Error(`BLE native module version mismatch. Missing methods: ${missingMethods.join(', ')}`);
+        throw new Error(`BLE native module not properly installed. Missing methods: ${missingMethods.join(', ')}`);
       }
-      console.log('✅ Native module methods verified');
+      console.log('✅ Native module methods verified (v8.0.6)');
     } catch (error: any) {
-      if (error.message.includes('version mismatch')) {
+      if (error.message.includes('Missing methods')) {
         throw error;
       }
       console.warn('⚠️ Could not verify native module methods:', error.message);
@@ -77,17 +76,11 @@ class SimpleBLE {
     // Start BLE Manager AFTER permissions are granted
     console.log('🚀 Starting BLE Manager...');
     try {
-      // Use correct API for v12.4.4 - start() takes options object
+      // API for v8.0.6: start(options) - options object is supported
       await BleManager.start({ showAlert: false });
       console.log('✅ BLE Manager started');
     } catch (error: any) {
       console.error('❌ Failed to start BLE Manager:', error);
-      
-      // Check for version mismatch errors
-      if (error.message?.includes('version') || error.message?.includes('mismatch')) {
-        throw new Error(`Version mismatch detected. Please rebuild the app: ${error.message}`);
-      }
-      
       throw new Error(`Failed to start BLE Manager: ${error.message}`);
     }
 
@@ -170,26 +163,12 @@ class SimpleBLE {
     }
 
     // Scan for new devices
-    // CRITICAL: v12.4.4 BREAKING CHANGE - scan() now takes a single options object, not positional params
-    // Old API (v11): scan(serviceUUIDs, seconds, allowDuplicates)
-    // New API (v12.4.4): scan({ serviceUUIDs, seconds, allowDuplicates, ... })
+    // API for v8.0.6: scan(serviceUUIDs, seconds, allowDuplicates)
     try {
-      await BleManager.scan({
-        serviceUUIDs: [],        // Empty array = scan all devices
-        seconds: 10,             // Scan duration in seconds
-        allowDuplicates: true,   // iOS only, but safe to include
-      });
-      console.log('✅ Scan started (using v12.4.4 API)');
+      await BleManager.scan([], 10, true);
+      console.log('✅ Scan started (using v8.0.6 API)');
     } catch (error: any) {
       console.error('❌ Scan failed:', error);
-      // Check for version mismatch
-      if (error.message?.includes('version') || error.message?.includes('mismatch')) {
-        throw new Error(`Version mismatch in scan method. Rebuild required: ${error.message}`);
-      }
-      // Check if error suggests wrong API usage
-      if (error.message?.includes('arguments') || error.message?.includes('parameter')) {
-        throw new Error(`Scan API mismatch. Using v12.4.4 options object format. Error: ${error.message}`);
-      }
       throw error;
     }
 
@@ -268,16 +247,12 @@ class SimpleBLE {
 
     console.log(`🔗 Connecting to ${deviceId}...`);
     try {
-      // API for v12.4.4: connect(peripheralId)
+      // API for v8.0.6: connect(peripheralId)
       await BleManager.connect(deviceId);
       console.log('✅ Connect call completed, waiting for connection event...');
       // Connection confirmed via listener
     } catch (error: any) {
       console.error('❌ Connect failed:', error);
-      // Check for version mismatch
-      if (error.message?.includes('version') || error.message?.includes('mismatch')) {
-        throw new Error(`Version mismatch in connect method. Rebuild required: ${error.message}`);
-      }
       throw error;
     }
   }
@@ -289,7 +264,7 @@ class SimpleBLE {
       let info: any;
       
       try {
-        // API for v12.4.4: retrieveServices(peripheralId, serviceUUIDs?)
+        // API for v8.0.6: retrieveServices(peripheralId, serviceUUIDs?)
         // Wait a bit after connection before retrieving services (GATT needs time)
         await new Promise(resolve => setTimeout(resolve, 500));
         
@@ -297,26 +272,13 @@ class SimpleBLE {
       } catch (bridgeError: any) {
         const errorMsg = bridgeError?.message || String(bridgeError);
         
-        // Check for version mismatch errors
-        if (errorMsg.includes('version') || errorMsg.includes('mismatch') || 
-            errorMsg.includes('Version mismatch')) {
-          console.error('❌ Version mismatch error detected:', errorMsg);
-          throw new Error(`Version mismatch between JS and native BLE module. Rebuild required: ${errorMsg}`);
-        }
-        
-        // CRITICAL: Handle React Native bridge type mismatch error
-        // "UnexpectedNativeTypeException: expected Map, got a array"
+        // Handle React Native bridge type mismatch error
         if (errorMsg.includes('expected Map') || 
             errorMsg.includes('got a array') || 
             errorMsg.includes('UnexpectedNativeTypeException')) {
           console.error('❌ Bridge type error detected:', errorMsg);
           console.error('This means retrieveServices() returned array instead of object');
-          console.error('Possible causes:');
-          console.error('  1. react-native-ble-manager version bug');
-          console.error('  2. Native module serialization issue');
-          console.error('  3. Device-specific BLE stack behavior');
-          console.error('  4. Version mismatch between JS and native code');
-          throw new Error('Bridge type mismatch: retrieveServices returned wrong format. Rebuild app to fix version mismatch.');
+          throw new Error('Bridge type mismatch: retrieveServices returned wrong format. Try reconnecting.');
         }
         throw bridgeError;
       }
@@ -408,16 +370,12 @@ class SimpleBLE {
       console.log('✅ RX:', this.rxChar);
 
       // Enable notifications
-      // API for v12.4.4: startNotification(peripheralId, serviceUUID, characteristicUUID)
+      // API for v8.0.6: startNotification(peripheralId, serviceUUID, characteristicUUID)
       try {
         await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
         console.log('✅ Notifications enabled - ready to receive data');
       } catch (error: any) {
         console.error('❌ Failed to enable notifications:', error);
-        // Check for version mismatch
-        if (error.message?.includes('version') || error.message?.includes('mismatch')) {
-          throw new Error(`Version mismatch in startNotification. Rebuild required: ${error.message}`);
-        }
         throw error;
       }
     } catch (error: any) {

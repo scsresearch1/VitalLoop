@@ -444,7 +444,22 @@ class BLEManagerService {
       // Auto-start scanning and connecting if enabled
       if (this.autoScanEnabled) {
         logger.log('🔄 Auto-scan enabled - starting automatic scan for Ring device');
+        // Check paired devices first, then scan
         this.startAutoScan();
+      } else {
+        // Even if auto-scan not enabled, check for already-paired Ring devices
+        // This handles the case where device is connected at system level
+        logger.log('Checking for already-paired Ring devices...');
+        const pairedDevices = await this.getBondedPeripherals();
+        if (pairedDevices.length > 0) {
+          logger.log(`✅ Found ${pairedDevices.length} Ring device(s) already paired`);
+          // Store the device ID for potential connection
+          if (pairedDevices[0].id) {
+            this.lastConnectedDeviceId = pairedDevices[0].id;
+            await this.saveLastDeviceId(pairedDevices[0].id);
+            logger.log(`Stored paired Ring device ID: ${pairedDevices[0].id}`);
+          }
+        }
       }
       
       // Optional: Auto-reconnect on startup if device was previously connected
@@ -463,6 +478,61 @@ class BLEManagerService {
       // Set connection state to indicate BLE is not available
       this.connectionState.isConnected = false;
       throw error; // Re-throw to let caller handle
+    }
+  }
+
+  /**
+   * Get already-paired/connected devices
+   * Useful when device is already connected at system level
+   */
+  async getBondedPeripherals(): Promise<BLEDevice[]> {
+    if (!this.isAvailable || !BleManager) {
+      return [];
+    }
+
+    try {
+      const bondedDevices = await BleManager.getBondedPeripherals();
+      logger.log(`Found ${bondedDevices.length} bonded/paired devices`);
+      
+      // Log all devices for debugging
+      bondedDevices.forEach((device: BLEDevice) => {
+        logger.log(`  - ${device.name || 'Unknown'} (${device.id})`);
+      });
+      
+      // Filter for Ring devices - expanded pattern matching
+      const ringDevices = bondedDevices.filter((device: BLEDevice) => {
+        const deviceName = (device.name || '').toLowerCase();
+        const deviceId = (device.id || '').toLowerCase();
+        
+        // Match various Ring naming patterns
+        const isRingDevice = 
+          deviceName.includes('ring') ||
+          /^r\d{2}/i.test(device.name || '') || // R01, R02, R03, R11, etc.
+          /^r\d{2}c/i.test(device.name || '') || // R11C_B803 pattern
+          deviceName.includes('r01') ||
+          deviceName.includes('r02') ||
+          deviceName.includes('r03') ||
+          deviceName.includes('r11') ||
+          deviceId.includes('r11') ||
+          device.advertising?.serviceUUIDs?.includes(GATT_SERVICE_UUID);
+        
+        if (isRingDevice) {
+          logger.log(`✅ Ring device identified: ${device.name || device.id}`);
+        }
+        
+        return isRingDevice;
+      });
+      
+      if (ringDevices.length > 0) {
+        logger.log(`✅ Found ${ringDevices.length} Ring device(s) in paired devices:`, ringDevices.map(d => `${d.name || 'Unknown'} (${d.id})`));
+      } else {
+        logger.log('⚠️ No Ring devices found in paired devices');
+      }
+      
+      return ringDevices;
+    } catch (error) {
+      logger.error('Failed to get bonded peripherals:', error);
+      return [];
     }
   }
 
@@ -506,12 +576,16 @@ class BLEManagerService {
       const scanListener = BleManager.addListener(
         'BleManagerDiscoverPeripheral',
         (device: BLEDevice) => {
-          // Filter for Ring devices (check name or service UUID)
+          // Filter for Ring devices (check name patterns or service UUID)
+          // Support various Ring naming patterns: Ring, R01-R03, R11C_*, etc.
+          const deviceName = device.name || '';
           const isRingDevice = 
-            device.name?.includes('Ring') ||
-            device.name?.includes('R01') ||
-            device.name?.includes('R02') ||
-            device.name?.includes('R03') ||
+            deviceName.toLowerCase().includes('ring') ||
+            /^R\d{2}/i.test(deviceName) || // Matches R01, R02, R03, R11, etc.
+            deviceName.includes('R01') ||
+            deviceName.includes('R02') ||
+            deviceName.includes('R03') ||
+            deviceName.includes('R11') || // Matches R11C_B803 pattern
             device.advertising?.serviceUUIDs?.includes(GATT_SERVICE_UUID);
 
           if (isRingDevice) {
@@ -868,7 +942,36 @@ class BLEManagerService {
     try {
       logger.log('🔍 Starting automatic scan for Ring device...');
       
-      // Scan for 10 seconds
+      // First, check already-paired devices (device might already be connected at system level)
+      // This is CRITICAL - device "R11C_B803" is already connected at system level
+      logger.log('🔍 Checking already-paired devices first...');
+      const pairedDevices = await this.getBondedPeripherals();
+      
+      if (pairedDevices.length > 0) {
+        logger.log(`✅ Found ${pairedDevices.length} Ring device(s) in paired devices - attempting auto-connect`);
+        // Auto-connect to first paired Ring device
+        const ringDevice = pairedDevices[0];
+        if (ringDevice.id && this.autoConnectEnabled) {
+          logger.log(`🔗 Auto-connecting to paired Ring device: ${ringDevice.name || ringDevice.id}`);
+          this.stopAutoScan();
+          
+          // Try to connect to the already-paired device
+          try {
+            await this.connect(ringDevice.id);
+            logger.log('✅ Successfully connected to paired Ring device');
+            return; // Successfully connected, stop scanning
+          } catch (error) {
+            logger.error('Auto-connect to paired device failed:', error);
+            logger.log('Will continue with BLE scan as fallback...');
+            // If connection fails, continue with scan below
+          }
+        }
+      } else {
+        logger.log('⚠️ No Ring devices found in paired devices - will scan for new devices');
+      }
+      
+      // If no paired device found or connection failed, scan for new devices
+      logger.log('No paired Ring device found, scanning for new devices...');
       await this.scanForDevices(10000);
       
       // If no device found, retry after delay
@@ -951,6 +1054,10 @@ export const bleManager = {
   
   async scanForDevices(duration?: number) {
     return getBLEManager().scanForDevices(duration);
+  },
+  
+  async getBondedPeripherals() {
+    return getBLEManager().getBondedPeripherals();
   },
   
   async connect(deviceId: string) {

@@ -51,6 +51,36 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
       setBluetoothState(state);
       setInitError(null);
       
+      // Check for already-paired devices (device might be connected at system level)
+      if (state === 'poweredOn') {
+        console.log('Checking for already-paired Ring devices...');
+        try {
+          const pairedDevices = await bleManager.getBondedPeripherals();
+          if (pairedDevices.length > 0) {
+            console.log(`✅ Found ${pairedDevices.length} Ring device(s) already paired`);
+            setDevices(pairedDevices);
+            // Auto-connect to first paired device if auto-scan is enabled
+            if (pairedDevices[0].id) {
+              console.log(`🔗 Attempting to connect to paired device: ${pairedDevices[0].name || pairedDevices[0].id}`);
+              // Small delay to let UI update
+              setTimeout(async () => {
+                try {
+                  await bleManager.connect(pairedDevices[0].id!);
+                  const connState = bleManager.getConnectionState();
+                  if (connState.isConnected) {
+                    onDeviceConnected(pairedDevices[0].id!);
+                  }
+                } catch (err) {
+                  console.error('Auto-connect to paired device failed:', err);
+                }
+              }, 1000);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to check paired devices:', err);
+        }
+      }
+      
       // Auto-scan is enabled in App.tsx, but we can also enable it here as backup
       // The scan will start automatically once Bluetooth is on
       console.log('✅ BLE initialized - auto-scan will start when Bluetooth is enabled');

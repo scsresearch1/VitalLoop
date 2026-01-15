@@ -3,7 +3,20 @@
  * Handles Bluetooth Low Energy connection and communication with the Ring
  */
 
-import { Device, BleManager, State } from 'react-native-ble-manager';
+// Import BLE Manager with fallback handling
+let BleManager: any;
+let Device: any;
+let State: any;
+
+try {
+  const BLEModule = require('react-native-ble-manager');
+  BleManager = BLEModule.default || BLEModule.BleManager || BLEModule;
+  Device = BLEModule.Device;
+  State = BLEModule.State;
+} catch (error) {
+  console.error('Failed to import react-native-ble-manager:', error);
+  // Will be handled by availability check
+}
 import {
   GATT_SERVICE_UUID,
   GATT_TX_CHARACTERISTIC_UUID,
@@ -20,11 +33,13 @@ import { logger } from '../utils/Logger';
 // Check if BleManager is available (native module linked)
 let BleManagerAvailable = false;
 try {
-  if (BleManager && typeof BleManager === 'function') {
+  if (BleManager && (typeof BleManager === 'function' || typeof BleManager === 'object')) {
+    // Try to instantiate to verify it's actually available
     BleManagerAvailable = true;
   }
 } catch (error) {
-  logger.warn('BleManager native module not available');
+  logger.warn('BleManager native module not available:', error);
+  BleManagerAvailable = false;
 }
 
 class BLEManagerService {
@@ -49,18 +64,32 @@ class BLEManagerService {
       isConnected: false,
     };
     
-    if (BleManagerAvailable) {
+    if (BleManagerAvailable && BleManager) {
       try {
-        this.bleManager = new BleManager();
+        // Try to create instance - this will fail if native module isn't linked
+        if (typeof BleManager === 'function') {
+          this.bleManager = new BleManager();
+        } else if (BleManager.default && typeof BleManager.default === 'function') {
+          this.bleManager = new BleManager.default();
+        } else {
+          throw new Error('BleManager is not a constructor');
+        }
         this.isAvailable = true;
         this.setupListeners();
-      } catch (error) {
+        logger.log('✅ BLE Manager instance created');
+      } catch (error: any) {
         logger.error('Failed to create BleManager instance:', error);
+        logger.error('Error details:', error?.message || error);
         this.isAvailable = false;
+        this.bleManager = null;
+        // Don't throw - allow app to continue
       }
     } else {
       logger.warn('BleManager native module not available - BLE features disabled');
+      logger.warn('This usually means the native module was not included in the build.');
+      logger.warn('Make sure you are using a development build (expo-dev-client) or production build with native modules.');
       this.isAvailable = false;
+      this.bleManager = null;
     }
   }
 
@@ -107,8 +136,9 @@ class BLEManagerService {
    */
   async initialize(): Promise<void> {
     if (!this.bleManager || !this.isAvailable) {
-      logger.warn('BLE Manager not available - native module not linked');
-      throw new Error('BLE native module not available. Please rebuild the app with native modules.');
+      const errorMsg = 'BLE native module not available. The app was built without native BLE support. Please rebuild using "expo-dev-client" or ensure react-native-ble-manager is properly linked in your build configuration.';
+      logger.error(errorMsg);
+      throw new Error(errorMsg);
     }
 
     try {

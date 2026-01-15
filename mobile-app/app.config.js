@@ -1,7 +1,8 @@
-const { withAndroidManifest, AndroidConfig } = require('@expo/config-plugins');
+const { withAndroidManifest, withGradleProperties } = require('@expo/config-plugins');
 
 /**
  * Config plugin to ensure react-native-ble-manager native module is included
+ * This ensures permissions are set and native module is properly linked
  */
 const withBLEManager = (config) => {
   // Ensure BLE permissions are in AndroidManifest
@@ -37,6 +38,26 @@ const withBLEManager = (config) => {
     });
 
     manifest['uses-permission'] = permissions;
+
+    return config;
+  });
+
+  // Ensure autolinking is enabled (should be default, but making sure)
+  config = withGradleProperties(config, (config) => {
+    config.modResults = config.modResults || [];
+    
+    // Ensure React Native autolinking is enabled
+    const hasAutolinking = config.modResults.some(
+      (item) => item.type === 'property' && item.key === 'expo.autolinking.enabled'
+    );
+    
+    if (!hasAutolinking) {
+      config.modResults.push({
+        type: 'property',
+        key: 'expo.autolinking.enabled',
+        value: 'true',
+      });
+    }
 
     return config;
   });

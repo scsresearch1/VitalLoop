@@ -33,7 +33,8 @@
       },
       "env": {
         "NODE_ENV": "production"
-      }
+      },
+      "prebuildCommand": "npx expo prebuild --clean"
     }
   },
   "submit": {

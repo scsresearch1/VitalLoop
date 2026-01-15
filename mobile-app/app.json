@@ -39,6 +39,7 @@
     },
     "plugins": [
       "expo-dev-client",
+      "react-native-ble-manager",
       [
         "expo-build-properties",
         {

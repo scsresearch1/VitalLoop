@@ -9,20 +9,23 @@
       "distribution": "internal",
       "android": {
         "gradleCommand": ":app:assembleDebug",
-        "buildType": "apk"
+        "buildType": "apk",
+        "credentialsSource": "remote"
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk",
-        "autoIncrement": true
+        "autoIncrement": true,
+        "credentialsSource": "remote"
       }
     },
     "production": {
       "android": {
         "buildType": "apk",
-        "autoIncrement": true
+        "autoIncrement": true,
+        "credentialsSource": "remote"
       }
     }
   },

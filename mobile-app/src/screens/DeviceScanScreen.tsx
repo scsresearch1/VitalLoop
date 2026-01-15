@@ -29,12 +29,36 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
   const [bluetoothState, setBluetoothState] = useState<string>('unknown');
   const [initError, setInitError] = useState<string | null>(null);
   const [lastDeviceId, setLastDeviceId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
+    // Intercept console.log to capture diagnostic logs
+    const originalLog = console.log;
+    const originalError = console.error;
+    
+    console.log = (...args: any[]) => {
+      originalLog(...args);
+      const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      if (message.includes('DIAGNOSTIC')) {
+        setLogs(prev => [...prev.slice(-49), `[${new Date().toLocaleTimeString()}] ${message}`]);
+      }
+    };
+    
+    console.error = (...args: any[]) => {
+      originalError(...args);
+      const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      if (message.includes('DIAGNOSTIC') || message.includes('ERROR')) {
+        setLogs(prev => [...prev.slice(-49), `[${new Date().toLocaleTimeString()}] ❌ ${message}`]);
+      }
+    };
+    
     initializeBLE();
     checkBluetoothStatePeriodically();
     checkLastDevice();
     return () => {
+      console.log = originalLog;
+      console.error = originalError;
       bleManager.destroy();
     };
   }, []);

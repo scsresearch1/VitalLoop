@@ -22,7 +22,8 @@ interface Device {
 
 class SimpleBLE {
   private emitter: NativeEventEmitter | null = null;
-  private isInitialized = false;
+  private _isInitialized = false;
+  public get isInitialized() { return this._isInitialized; }
   private connectedDeviceId: string | null = null;
   private serviceUUID: string | null = null;
   private txChar: string | null = null;
@@ -37,7 +38,7 @@ class SimpleBLE {
   }
 
   async initialize(): Promise<void> {
-    if (this.isInitialized) return;
+    if (this._isInitialized) return;
 
     console.log('🔵 Initializing BLE...');
 
@@ -46,21 +47,30 @@ class SimpleBLE {
       throw new Error('BLE native module not available');
     }
 
-    // Request permissions
+    // CRITICAL: Request permissions BEFORE starting BLE Manager
+    console.log('🔐 Requesting Bluetooth permissions...');
     const hasPermissions = await requestBLEPermissions();
     if (!hasPermissions) {
-      throw new Error('Bluetooth permissions denied');
+      console.error('❌ Bluetooth permissions denied');
+      throw new Error('Bluetooth permissions denied. Please grant permissions in Settings.');
     }
+    console.log('✅ Permissions granted');
 
-    // Start BLE Manager
-    await BleManager.start({ showAlert: false });
-    console.log('✅ BLE Manager started');
+    // Start BLE Manager AFTER permissions are granted
+    console.log('🚀 Starting BLE Manager...');
+    try {
+      await BleManager.start({ showAlert: false });
+      console.log('✅ BLE Manager started');
+    } catch (error: any) {
+      console.error('❌ Failed to start BLE Manager:', error);
+      throw new Error(`Failed to start BLE Manager: ${error.message}`);
+    }
 
     // Setup event listeners
     this.setupListeners();
 
-    this.isInitialized = true;
-    console.log('✅ BLE initialized');
+    this._isInitialized = true;
+    console.log('✅ BLE initialized successfully');
   }
 
   private setupListeners(): void {
@@ -114,7 +124,7 @@ class SimpleBLE {
   }
 
   async scanForRing(): Promise<Device[]> {
-    if (!this.isInitialized) {
+    if (!this._isInitialized) {
       await this.initialize();
     }
 
@@ -206,7 +216,7 @@ class SimpleBLE {
   }
 
   async connect(deviceId: string): Promise<void> {
-    if (!this.isInitialized) {
+    if (!this._isInitialized) {
       await this.initialize();
     }
 

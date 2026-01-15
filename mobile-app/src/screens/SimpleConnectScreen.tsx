@@ -24,9 +24,28 @@ export default function SimpleConnectScreen({ onConnected }: Props) {
   const [connectedDevice, setConnectedDevice] = useState<string | null>(null);
 
   useEffect(() => {
-    simpleBLE.initialize().catch(err => {
-      Alert.alert('Error', err.message);
-    });
+    // Initialize BLE (will request permissions)
+    const initBLE = async () => {
+      try {
+        await simpleBLE.initialize();
+        console.log('✅ BLE initialized in SimpleConnectScreen');
+      } catch (err: any) {
+        console.error('❌ BLE initialization failed:', err);
+        Alert.alert(
+          'Initialization Error',
+          err.message || 'Failed to initialize Bluetooth. Please check permissions.',
+          [
+            { text: 'OK' },
+            {
+              text: 'Retry',
+              onPress: () => initBLE(),
+            },
+          ]
+        );
+      }
+    };
+
+    initBLE();
 
     // Check if already connected
     const checkConnected = setInterval(() => {
@@ -41,7 +60,7 @@ export default function SimpleConnectScreen({ onConnected }: Props) {
 
     return () => {
       clearInterval(checkConnected);
-      simpleBLE.cleanup();
+      // Don't cleanup on unmount - keep connection alive
     };
   }, []);
 
@@ -50,13 +69,28 @@ export default function SimpleConnectScreen({ onConnected }: Props) {
     setDevices([]);
 
     try {
+      // Ensure BLE is initialized (permissions checked)
+      if (!simpleBLE.isInitialized) {
+        await simpleBLE.initialize();
+      }
+
+      console.log('🔍 Starting scan...');
       const found = await simpleBLE.scanForRing();
+      console.log(`✅ Scan complete. Found ${found.length} device(s)`);
+      
       setDevices(found);
       if (found.length === 0) {
-        Alert.alert('No Devices', 'No Ring devices found. Make sure your ring is nearby and powered on.');
+        Alert.alert(
+          'No Devices',
+          'No Ring devices found. Make sure your ring is nearby, powered on, and Bluetooth is enabled.'
+        );
       }
     } catch (error: any) {
-      Alert.alert('Scan Error', error.message);
+      console.error('❌ Scan error:', error);
+      Alert.alert(
+        'Scan Error',
+        error.message || 'Failed to scan for devices. Please check Bluetooth permissions and try again.'
+      );
     } finally {
       setIsScanning(false);
     }

@@ -108,8 +108,10 @@ class BLEManagerService {
     if (BleManagerNative) {
       this.bleEmitter = new NativeEventEmitter(BleManagerNative);
       logger.log('✅ NativeEventEmitter created for BLE events');
+      console.log('✅ DIAGNOSTIC: NativeEventEmitter created:', this.bleEmitter !== null);
     } else {
       logger.error('❌ Cannot create NativeEventEmitter - BleManagerNative is null');
+      console.error('❌ DIAGNOSTIC: BleManagerNative is null - events will NOT work');
     }
     
     this.setupListeners();
@@ -164,6 +166,7 @@ class BLEManagerService {
 
       // Connection events
       const connectSubscription = this.bleEmitter.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
+        console.log('✅✅✅ DIAGNOSTIC: BleManagerConnectPeripheral EVENT RECEIVED:', data);
         logger.log('✅ Connected to device:', data.peripheral);
         
         // CRITICAL: Clear watchdog timer on successful connection
@@ -239,6 +242,8 @@ class BLEManagerService {
       this.eventSubscriptions.push(disconnectSubscription);
       
       logger.log(`✅ Setup ${this.eventSubscriptions.length} BLE event listeners via NativeEventEmitter`);
+      console.log(`✅ DIAGNOSTIC: ${this.eventSubscriptions.length} event listeners registered`);
+      console.log('✅ DIAGNOSTIC: Event subscriptions:', this.eventSubscriptions.map((_, i) => i).length);
     } catch (error) {
       logger.error('Failed to setup BLE listeners:', error);
     }
@@ -990,6 +995,7 @@ class BLEManagerService {
       const peripheralInfo = await BleManager.retrieveServices(deviceId);
       
       // Log the actual structure for debugging
+      console.log('🔍 DIAGNOSTIC: retrieveServices returned:', JSON.stringify(peripheralInfo, null, 2));
       logger.debug('retrieveServices returned:', JSON.stringify(peripheralInfo, null, 2));
       
       // Handle the actual return format from react-native-ble-manager v12.4.4

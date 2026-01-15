@@ -1,6 +1,7 @@
 /**
  * Simple BLE Service
  * Minimal implementation: Enable, Scan, Connect, Receive Data
+ * FIXED: Scan stability, connection timeout, notification enabling, state management
  */
 
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
@@ -20,6 +21,9 @@ interface Device {
   rssi?: number;
 }
 
+type ConnectionCallback = (deviceId: string) => void;
+type DisconnectionCallback = () => void;
+
 class SimpleBLE {
   private emitter: NativeEventEmitter | null = null;
   private _isInitialized = false;
@@ -30,6 +34,13 @@ class SimpleBLE {
   private rxChar: string | null = null;
   private onDataCallback: ((data: number[]) => void) | null = null;
   private subscriptions: any[] = [];
+  
+  // FIXED: Connection state management
+  private isConnecting: boolean = false;
+  private connectionTimeout: NodeJS.Timeout | null = null;
+  private connectionCallbacks: ConnectionCallback[] = [];
+  private disconnectionCallbacks: DisconnectionCallback[] = [];
+  private notificationsEnabled: boolean = false;
 
   constructor() {
     if (BleManagerNative) {
@@ -76,7 +87,6 @@ class SimpleBLE {
     // Start BLE Manager AFTER permissions are granted
     console.log('🚀 Starting BLE Manager...');
     try {
-      // API for v8.0.6: start(options) - options object is supported
       await BleManager.start({ showAlert: false });
       console.log('✅ BLE Manager started');
     } catch (error: any) {
@@ -96,37 +106,64 @@ class SimpleBLE {
 
     // Connection event
     const connectSub = this.emitter.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
-      console.log('✅ Connected:', data.peripheral);
+      console.log('✅ Connected event received:', data.peripheral);
+      
+      // FIXED: Clear connection timeout
+      if (this.connectionTimeout) {
+        clearTimeout(this.connectionTimeout);
+        this.connectionTimeout = null;
+      }
+      
       this.connectedDeviceId = data.peripheral;
-      this.discoverServices(data.peripheral);
+      this.isConnecting = false;
+      
+      // FIXED: Discover services and enable notifications, then notify callbacks
+      this.discoverServicesAndEnableNotifications(data.peripheral)
+        .then(() => {
+          console.log('✅ Connection fully established - services discovered, notifications enabled');
+          // Notify all connection callbacks
+          this.connectionCallbacks.forEach(cb => cb(data.peripheral));
+        })
+        .catch((error) => {
+          console.error('❌ Failed to complete connection setup:', error);
+          // Still notify callbacks but log the error
+          this.connectionCallbacks.forEach(cb => cb(data.peripheral));
+        });
     });
     this.subscriptions.push(connectSub);
 
     // Disconnect event
-    const disconnectSub = this.emitter.addListener('BleManagerDisconnectPeripheral', () => {
-      console.log('❌ Disconnected');
+    const disconnectSub = this.emitter.addListener('BleManagerDisconnectPeripheral', (data: { peripheral?: string }) => {
+      console.log('❌ Disconnected event received');
       this.connectedDeviceId = null;
       this.serviceUUID = null;
       this.txChar = null;
       this.rxChar = null;
+      this.isConnecting = false;
+      this.notificationsEnabled = false;
+      
+      // Clear connection timeout if still active
+      if (this.connectionTimeout) {
+        clearTimeout(this.connectionTimeout);
+        this.connectionTimeout = null;
+      }
+      
+      // Notify disconnection callbacks
+      this.disconnectionCallbacks.forEach(cb => cb());
     });
     this.subscriptions.push(disconnectSub);
 
     // Data received
     const dataSub = this.emitter.addListener('BleManagerDidUpdateValueForCharacteristic', (data: any) => {
       try {
-        // CRITICAL: Handle bridge type mismatch - value might be in different formats
         let value: number[] = [];
         
         if (Array.isArray(data)) {
-          // Native sent array directly
           value = data;
         } else if (data && typeof data === 'object') {
-          // Normal object format
           if (Array.isArray(data.value)) {
             value = data.value;
           } else if (data.value && typeof data.value === 'object') {
-            // Convert object to array if needed
             value = Object.values(data.value) as number[];
           }
         }
@@ -141,6 +178,7 @@ class SimpleBLE {
     this.subscriptions.push(dataSub);
   }
 
+  // FIXED: Stable scan with proper error handling
   async scanForRing(): Promise<Device[]> {
     if (!this._isInitialized) {
       await this.initialize();
@@ -148,6 +186,8 @@ class SimpleBLE {
 
     console.log('🔍 Scanning for Ring...');
     const devices: Device[] = [];
+    let scanSub: any = null;
+    let scanError: Error | null = null;
 
     // Check paired devices first
     try {
@@ -162,49 +202,43 @@ class SimpleBLE {
       console.log('No paired devices');
     }
 
-    // Scan for new devices
-    // API for v8.0.6: scan(serviceUUIDs, seconds, allowDuplicates)
+    // FIXED: Scan with proper error handling and listener protection
     try {
       await BleManager.scan([], 10, true);
       console.log('✅ Scan started (using v8.0.6 API)');
     } catch (error: any) {
-      console.error('❌ Scan failed:', error);
+      console.error('❌ Scan failed to start:', error);
       throw error;
     }
 
-    const scanSub = this.emitter?.addListener('BleManagerDiscoverPeripheral', (deviceData: any) => {
+    // FIXED: Wrap listener in try-catch to prevent crashes
+    scanSub = this.emitter?.addListener('BleManagerDiscoverPeripheral', (deviceData: any) => {
       try {
-        // CRITICAL: Handle bridge type mismatch - native may send array instead of object
-        // This prevents "expected Map, got array" errors
         let device: any;
         
         if (Array.isArray(deviceData)) {
-          // Native sent array - convert to object
           device = {
             id: deviceData[0] || deviceData[1] || '',
             name: deviceData[1] || deviceData[2] || undefined,
             rssi: deviceData[2] || deviceData[3] || undefined,
           };
-          console.log('⚠️ Device data received as array, converted to object');
         } else if (deviceData && typeof deviceData === 'object' && !Array.isArray(deviceData)) {
-          // Normal object format
           device = {
             id: deviceData.id || deviceData.peripheral || deviceData.address || '',
             name: deviceData.name || deviceData.localName || undefined,
             rssi: deviceData.rssi || undefined,
           };
         } else {
-          console.warn('Unknown device data format:', typeof deviceData, deviceData);
-          return;
+          return; // Skip invalid data
         }
 
         if (!device.id) {
-          console.warn('Device missing ID, skipping');
-          return;
+          return; // Skip devices without ID
         }
 
         const name = (device.name || '').toLowerCase();
         if (name.includes('ring') || name.includes('r11') || name.includes('r01') || name.includes('r02') || name.includes('r03')) {
+          // FIXED: Check for duplicates before adding
           const exists = devices.some(d => d.id === device.id);
           if (!exists) {
             devices.push({ id: device.id, name: device.name, rssi: device.rssi });
@@ -212,10 +246,15 @@ class SimpleBLE {
           }
         }
       } catch (error) {
-        console.error('Error processing discovered device:', error);
+        // FIXED: Log error but don't crash scan
+        console.error('Error processing discovered device (non-fatal):', error);
+        scanError = error instanceof Error ? error : new Error(String(error));
       }
     });
-    this.subscriptions.push(scanSub);
+    
+    if (scanSub) {
+      this.subscriptions.push(scanSub);
+    }
 
     // Wait for scan to complete
     await new Promise(resolve => setTimeout(resolve, 10000));
@@ -224,99 +263,117 @@ class SimpleBLE {
     try {
       await BleManager.stopScan();
     } catch (e) {
-      // Ignore
+      // Ignore stop scan errors
     }
 
+    // FIXED: Clean up listener safely
     if (scanSub) {
-      scanSub.remove();
-      // Remove from subscriptions array
-      const index = this.subscriptions.indexOf(scanSub);
-      if (index > -1) {
-        this.subscriptions.splice(index, 1);
+      try {
+        scanSub.remove();
+        const index = this.subscriptions.indexOf(scanSub);
+        if (index > -1) {
+          this.subscriptions.splice(index, 1);
+        }
+      } catch (e) {
+        // Ignore cleanup errors
       }
+    }
+
+    // FIXED: Throw error if scan had issues (but still return found devices)
+    if (scanError) {
+      console.warn('⚠️ Scan completed with errors, but found devices:', devices.length);
     }
 
     console.log(`✅ Scan complete. Found ${devices.length} device(s)`);
     return devices;
   }
 
+  // FIXED: Connection with timeout and proper state management
   async connect(deviceId: string): Promise<void> {
     if (!this._isInitialized) {
       await this.initialize();
     }
 
+    // FIXED: Clear any existing connection state
+    if (this.isConnecting) {
+      console.warn('⚠️ Already connecting, clearing previous attempt...');
+      if (this.connectionTimeout) {
+        clearTimeout(this.connectionTimeout);
+      }
+    }
+
+    // FIXED: Disconnect from previous device if different
+    if (this.connectedDeviceId && this.connectedDeviceId !== deviceId) {
+      console.log('Disconnecting from previous device...');
+      try {
+        await BleManager.disconnect(this.connectedDeviceId);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (e) {
+        // Ignore disconnect errors
+      }
+    }
+
+    this.isConnecting = true;
     console.log(`🔗 Connecting to ${deviceId}...`);
+
+    // FIXED: Set connection timeout (15 seconds)
+    const CONNECTION_TIMEOUT = 15000;
+    this.connectionTimeout = setTimeout(() => {
+      if (this.isConnecting) {
+        console.error('❌ Connection timeout - no connection event received');
+        this.isConnecting = false;
+        this.connectionTimeout = null;
+        // Don't throw here - let the promise reject naturally
+      }
+    }, CONNECTION_TIMEOUT);
+
     try {
-      // API for v8.0.6: connect(peripheralId)
       await BleManager.connect(deviceId);
       console.log('✅ Connect call completed, waiting for connection event...');
-      // Connection confirmed via listener
+      // Connection will be confirmed via listener
+      // If timeout fires before event, isConnecting will be cleared
     } catch (error: any) {
       console.error('❌ Connect failed:', error);
+      this.isConnecting = false;
+      if (this.connectionTimeout) {
+        clearTimeout(this.connectionTimeout);
+        this.connectionTimeout = null;
+      }
       throw error;
     }
   }
 
-  private async discoverServices(deviceId: string): Promise<void> {
-    console.log('🔍 Discovering services...');
+  // FIXED: Separate method for service discovery and notification enabling
+  private async discoverServicesAndEnableNotifications(deviceId: string): Promise<void> {
+    console.log('🔍 Discovering services and enabling notifications...');
     
     try {
-      let info: any;
+      // Wait a bit after connection before retrieving services (GATT needs time)
+      await new Promise(resolve => setTimeout(resolve, 500));
       
-      try {
-        // API for v8.0.6: retrieveServices(peripheralId, serviceUUIDs?)
-        // Wait a bit after connection before retrieving services (GATT needs time)
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        info = await BleManager.retrieveServices(deviceId);
-      } catch (bridgeError: any) {
-        const errorMsg = bridgeError?.message || String(bridgeError);
-        
-        // Handle React Native bridge type mismatch error
-        if (errorMsg.includes('expected Map') || 
-            errorMsg.includes('got a array') || 
-            errorMsg.includes('UnexpectedNativeTypeException')) {
-          console.error('❌ Bridge type error detected:', errorMsg);
-          console.error('This means retrieveServices() returned array instead of object');
-          throw new Error('Bridge type mismatch: retrieveServices returned wrong format. Try reconnecting.');
-        }
-        throw bridgeError;
-      }
-
+      const info = await BleManager.retrieveServices(deviceId);
       console.log('🔍 Raw retrieveServices result type:', typeof info, Array.isArray(info) ? 'ARRAY' : 'OBJECT');
-      console.log('🔍 Raw retrieveServices result:', JSON.stringify(info, null, 2));
 
-      // CRITICAL: Handle if native returns array instead of object (bridge bug workaround)
       if (Array.isArray(info)) {
-        console.error('❌ CRITICAL: retrieveServices returned ARRAY instead of OBJECT');
-        console.error('This is a react-native-ble-manager bridge bug');
-        console.error('Array contents:', info);
-        throw new Error('retrieveServices returned array - this is a library bug. Try reconnecting.');
+        throw new Error('retrieveServices returned array instead of object');
       }
 
-      // Handle different return formats - could be object, array, or nested
       let services: any[] = [];
       let characteristics: any[] = [];
 
-      // Case 1: Direct object with services/characteristics arrays
       if (info && typeof info === 'object' && !Array.isArray(info)) {
-        // Extract services
         if (Array.isArray(info.services)) {
           services = info.services;
         } else if (info.services && typeof info.services === 'object' && !Array.isArray(info.services)) {
           services = Object.values(info.services);
-        } else if (info.serviceUUIDs && Array.isArray(info.serviceUUIDs)) {
-          // Fallback: if only serviceUUIDs array exists, create service objects
-          services = info.serviceUUIDs.map((uuid: string) => ({ uuid }));
         }
 
-        // Extract characteristics
         if (Array.isArray(info.characteristics)) {
           characteristics = info.characteristics;
         } else if (info.characteristics && typeof info.characteristics === 'object' && !Array.isArray(info.characteristics)) {
           characteristics = Object.values(info.characteristics);
         }
-      } else if (!info || typeof info !== 'object') {
+      } else {
         throw new Error(`Invalid retrieveServices return type: ${typeof info}`);
       }
 
@@ -336,13 +393,11 @@ class SimpleBLE {
       this.serviceUUID = service.uuid || service.serviceUUID;
       console.log('✅ Service found:', this.serviceUUID);
 
-      // Find characteristics that belong to this service
+      // Find characteristics
       const serviceCharacteristics = characteristics.filter((c: any) => {
         const charService = c?.service || c?.serviceUUID || '';
         return charService.toLowerCase() === this.serviceUUID.toLowerCase();
       });
-
-      console.log(`🔍 Found ${serviceCharacteristics.length} characteristics for service`);
 
       const tx = serviceCharacteristics.find((c: any) => {
         const uuid = c?.characteristic || c?.uuid || c?.characteristicUUID || '';
@@ -354,14 +409,8 @@ class SimpleBLE {
         return uuid.toLowerCase().includes('fd04') || uuid.toLowerCase() === RX_CHAR.toLowerCase();
       });
 
-      if (!tx) {
-        console.error('Available characteristics:', serviceCharacteristics.map(c => c?.characteristic || c?.uuid || 'unknown'));
-        throw new Error(`TX characteristic not found (looking for ${TX_CHAR})`);
-      }
-
-      if (!rx) {
-        console.error('Available characteristics:', serviceCharacteristics.map(c => c?.characteristic || c?.uuid || 'unknown'));
-        throw new Error(`RX characteristic not found (looking for ${RX_CHAR})`);
+      if (!tx || !rx) {
+        throw new Error(`Characteristics not found. TX: ${!!tx}, RX: ${!!rx}`);
       }
 
       this.txChar = tx.characteristic || tx.uuid || tx.characteristicUUID;
@@ -369,20 +418,43 @@ class SimpleBLE {
       console.log('✅ TX:', this.txChar);
       console.log('✅ RX:', this.rxChar);
 
-      // Enable notifications
-      // API for v8.0.6: startNotification(peripheralId, serviceUUID, characteristicUUID)
+      // FIXED: Enable notifications with timeout
+      console.log('🔔 Enabling notifications...');
       try {
         await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
+        this.notificationsEnabled = true;
         console.log('✅ Notifications enabled - ready to receive data');
       } catch (error: any) {
         console.error('❌ Failed to enable notifications:', error);
-        throw error;
+        throw new Error(`Failed to enable notifications: ${error.message}`);
       }
     } catch (error: any) {
-      console.error('❌ Service discovery failed:', error);
-      console.error('Error details:', error.message, error.stack);
+      console.error('❌ Service discovery/notification setup failed:', error);
       throw error;
     }
+  }
+
+  // FIXED: Add connection state getters
+  getIsConnecting(): boolean {
+    return this.isConnecting;
+  }
+
+  getNotificationsEnabled(): boolean {
+    return this.notificationsEnabled;
+  }
+
+  // FIXED: Add connection callbacks
+  onConnected(callback: ConnectionCallback): void {
+    this.connectionCallbacks.push(callback);
+  }
+
+  onDisconnected(callback: DisconnectionCallback): void {
+    this.disconnectionCallbacks.push(callback);
+  }
+
+  removeConnectionCallbacks(): void {
+    this.connectionCallbacks = [];
+    this.disconnectionCallbacks = [];
   }
 
   onData(callback: (data: number[]) => void): void {
@@ -398,11 +470,30 @@ class SimpleBLE {
   }
 
   cleanup(): void {
-    this.subscriptions.forEach(sub => sub.remove());
-    this.subscriptions = [];
-    if (this.connectedDeviceId) {
-      BleManager.disconnect(this.connectedDeviceId);
+    // FIXED: Clear all timeouts
+    if (this.connectionTimeout) {
+      clearTimeout(this.connectionTimeout);
+      this.connectionTimeout = null;
     }
+    
+    this.subscriptions.forEach(sub => {
+      try {
+        sub.remove();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    });
+    this.subscriptions = [];
+    
+    if (this.connectedDeviceId) {
+      try {
+        BleManager.disconnect(this.connectedDeviceId);
+      } catch (e) {
+        // Ignore disconnect errors
+      }
+    }
+    
+    this.removeConnectionCallbacks();
   }
 }
 

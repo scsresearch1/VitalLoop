@@ -47,20 +47,33 @@ export default function SimpleConnectScreen({ onConnected }: Props) {
 
     initBLE();
 
-    // Check if already connected
-    const checkConnected = setInterval(() => {
-      if (simpleBLE.isConnected()) {
-        const deviceId = simpleBLE.getConnectedDeviceId();
-        if (deviceId && deviceId !== connectedDevice) {
-          setConnectedDevice(deviceId);
-          onConnected(deviceId);
-        }
+    // FIXED: Use connection callbacks instead of polling
+    const handleConnected = (deviceId: string) => {
+      console.log('✅ Connection callback received:', deviceId);
+      setConnectedDevice(deviceId);
+      setIsConnecting(false); // FIXED: Clear connecting state
+      onConnected(deviceId);
+    };
+
+    const handleDisconnected = () => {
+      console.log('❌ Disconnection callback received');
+      setConnectedDevice(null);
+      setIsConnecting(false);
+    };
+
+    simpleBLE.onConnected(handleConnected);
+    simpleBLE.onDisconnected(handleDisconnected);
+
+    // FIXED: Also check if already connected on mount
+    if (simpleBLE.isConnected()) {
+      const deviceId = simpleBLE.getConnectedDeviceId();
+      if (deviceId) {
+        setConnectedDevice(deviceId);
       }
-    }, 1000);
+    }
 
     return () => {
-      clearInterval(checkConnected);
-      // Don't cleanup on unmount - keep connection alive
+      simpleBLE.removeConnectionCallbacks();
     };
   }, []);
 
@@ -97,14 +110,29 @@ export default function SimpleConnectScreen({ onConnected }: Props) {
   };
 
   const handleConnect = async (device: Device) => {
+    // FIXED: Check if already connecting
+    if (isConnecting) {
+      Alert.alert('Connection in Progress', 'Please wait for the current connection attempt to complete.');
+      return;
+    }
+
     setIsConnecting(true);
 
     try {
       await simpleBLE.connect(device.id);
-      // Connection will be confirmed via listener, checkConnected interval will catch it
+      // FIXED: Connection will be confirmed via callback, not polling
+      // If connection fails, timeout will clear isConnecting state
+      // Set a safety timeout to clear UI state if callback doesn't fire
+      setTimeout(() => {
+        if (isConnecting && !simpleBLE.isConnected()) {
+          console.warn('⚠️ Connection timeout - clearing UI state');
+          setIsConnecting(false);
+        }
+      }, 20000); // 20 second safety timeout
     } catch (error: any) {
-      Alert.alert('Connection Error', error.message);
-      setIsConnecting(false);
+      console.error('❌ Connection error:', error);
+      Alert.alert('Connection Error', error.message || 'Failed to connect. Please try again.');
+      setIsConnecting(false); // FIXED: Always clear on error
     }
   };
 

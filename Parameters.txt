@@ -1,0 +1,248 @@
+A. DIRECTLY EXTRACTABLE DATA (PROTOCOL-CONFIRMED)
+
+These are already implemented in firmware + APK, no speculation.
+
+1. Cardiovascular & Autonomic Signals
+
+Heart Rate (interval + real-time)
+
+Heart Rate History (timestamped)
+
+HRV (time-domain records, 30-min resolution)
+
+Continuous HR streaming (until explicit stop)
+
+Resting HR inference (via low-activity windows)
+
+Real-time HR alerts (if enabled)
+
+2. Blood Oxygen (SpO₂)
+
+SpO₂ measurements (interval-based)
+
+SpO₂ enable/disable state
+
+Measurement interval (configurable)
+
+Real-time SpO₂ streaming (via Large Data service)
+
+SpO₂ stop/start control
+
+SpO₂ notification events
+
+3. Blood Pressure (Estimated)
+
+Systolic BP
+
+Diastolic BP
+
+Timestamped BP history
+
+Batch retrieval (50 records per batch)
+
+Live BP measurement sessions
+
+BP stop/start control
+
+Important:
+This is algorithmic BP, not cuff-based — but still physiologically valuable.
+
+4. Temperature
+
+Skin temperature (continuous or interval)
+
+Body temperature (variant-specific)
+
+Temperature history
+
+Temperature notifications
+
+Temperature stop/start control
+
+5. Activity & Motion
+
+Step count (standard)
+
+Step count (ring-specific format – DataType 18)
+
+Calories burned
+
+Distance traveled
+
+Sport sessions (timestamped)
+
+Sport history
+
+Total daily sport aggregates
+
+Activity intensity (implicit via cadence + HR)
+
+6. Sleep
+
+Sleep start / end time
+
+Sleep stages (segmented, 15-min or 5-min bins)
+
+Sleep duration
+
+Sleep continuity
+
+Sleep interruptions
+
+Sleep quality flags
+
+Sleep history (up to ~29 days)
+
+7. HRV-Derived Stress / Recovery
+
+HRV records (multi-packet)
+
+Time-aligned HRV with sleep/activity
+
+HRV enable/disable state
+
+HRV history
+
+HRV stop/start control
+
+8. Device Interaction & Touch
+
+Touch events
+
+Touch gesture detection
+
+Touch revision / mode values
+
+Ring-only interaction flags
+
+Touch-only operating mode
+
+9. Device & Firmware Metadata
+
+Firmware version
+
+App revision support
+
+Feature capability bitmap
+
+Model family (ring vs band)
+
+Supported sensors/features
+
+Alarm support
+
+Notification support
+
+Real-time measurement support flags
+
+B. INDIRECTLY DERIVABLE DATA (NOT EXPLICIT, BUT COMPUTABLE)
+
+These are not sent as fields, but are scientifically extractable from raw streams.
+
+10. Autonomic Nervous System Metrics
+
+Sympathetic / parasympathetic balance
+
+Stress index
+
+Recovery index
+
+Vagal tone proxy
+
+Night-time autonomic suppression
+
+Derived from:
+
+HR
+
+HRV
+
+Sleep stages
+
+Temperature coupling
+
+11. Circadian Rhythm Features
+
+Circadian phase alignment
+
+Temperature rhythm amplitude
+
+HR circadian minima
+
+Sleep regularity
+
+Jet-lag / shift detection
+
+12. Cardiopulmonary Coupling
+
+HR–SpO₂ coherence
+
+Motion-corrected oxygen dynamics
+
+Perfusion quality indicators
+
+Respiratory stress proxy
+
+13. Fatigue & Load Indicators
+
+Cumulative physiological load
+
+Recovery debt
+
+Training strain proxy
+
+Overreaching indicators
+
+14. Longitudinal Trends
+
+Baseline drift (weeks/months)
+
+Early deviation detection
+
+Adaptation vs degradation separation
+
+Aging trend inference
+
+C. LATENT / UNLOCKABLE DATA (HARDWARE SUPPORT PRESENT)
+
+These require ML + signal intelligence, not firmware changes.
+
+15. Signal Quality & Contact Metrics
+
+Ring fit quality (inferred)
+
+Motion artifact probability
+
+Optical coupling quality
+
+Measurement confidence score
+
+16. Early Health Weak Signals
+
+Pre-symptomatic stress signatures
+
+Illness onset precursors
+
+Sleep fragmentation drift
+
+Autonomic instability episodes
+
+17. Behavioral Signatures
+
+Daily routine stability
+
+Activity regularity
+
+Recovery behavior patterns
+
+Lifestyle-driven physiological responses
+
+18. Personalized Physiological Baselines
+
+Individual HRV norms
+
+Individual SpO₂ variability envelope
+
+Temperature baseline drift
+
+Activity-response curves

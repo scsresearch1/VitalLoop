@@ -1,0 +1,238 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-black text-white;
+    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    overflow-x: hidden;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-gradient-to-br from-white/5 to-white/10 backdrop-blur-xl border border-white/10;
+  }
+  
+  .glass-strong {
+    @apply bg-gradient-to-br from-white/10 to-white/20 backdrop-blur-2xl border border-white/20;
+  }
+  
+  .glass-card {
+    @apply bg-gradient-to-br from-slate-900/80 to-slate-800/80 backdrop-blur-2xl border border-white/10;
+  }
+  
+  /* Cinematic Glass Card - Supports background images */
+  .cinematic-card {
+    @apply relative overflow-hidden rounded-3xl border border-white/10 backdrop-blur-xl;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  
+  .cinematic-card::before {
+    content: '';
+    @apply absolute inset-0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1;
+  }
+  
+  .cinematic-card-content {
+    @apply relative z-10;
+  }
+  
+  /* Cinematic card with gradient overlay variation */
+  .cinematic-card-gradient::before {
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.5) 0%, rgba(0, 0, 0, 0.8) 100%);
+  }
+  
+  /* Workout Card with Image Background - Netflix Style */
+  .workout-card {
+    @apply relative overflow-hidden rounded-3xl border border-white/10 cursor-pointer;
+    background-size: cover !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+    filter: grayscale(100%) brightness(40%);
+    transition: filter 0.4s ease, transform 0.3s ease;
+  }
+  
+  .workout-card:hover {
+    filter: grayscale(0%) brightness(100%);
+    transform: scale(1.02);
+  }
+  
+  .workout-card::before {
+    content: '';
+    @apply absolute inset-0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1;
+    transition: background 0.4s ease;
+    pointer-events: none;
+  }
+  
+  .workout-card:hover::before {
+    background: rgba(0, 0, 0, 0.3);
+  }
+  
+  /* Ensure background image is visible */
+  .workout-card[style*="background-image"] {
+    background-size: cover !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+  }
+  
+  .workout-card-content {
+    @apply relative z-10;
+  }
+  
+  .gradient-text {
+    @apply bg-gradient-to-r from-cyan-400 via-purple-400 via-pink-400 to-orange-400 bg-clip-text text-transparent;
+    background-size: 200% auto;
+    animation: gradient-shift 3s ease infinite;
+  }
+  
+  .gradient-text-2 {
+    @apply bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 bg-clip-text text-transparent;
+  }
+  
+  .gradient-bg {
+    @apply bg-gradient-to-br from-purple-600 via-pink-600 to-orange-500;
+  }
+  
+  .neon-purple {
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.8), 0 0 40px rgba(139, 92, 246, 0.4), 0 0 60px rgba(139, 92, 246, 0.2);
+  }
+  
+  .neon-cyan {
+    box-shadow: 0 0 20px rgba(34, 211, 238, 0.8), 0 0 40px rgba(34, 211, 238, 0.4), 0 0 60px rgba(34, 211, 238, 0.2);
+  }
+  
+  .neon-pink {
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.8), 0 0 40px rgba(236, 72, 153, 0.4), 0 0 60px rgba(236, 72, 153, 0.2);
+  }
+  
+  .glow {
+    box-shadow: 0 0 30px rgba(139, 92, 246, 0.6), 0 0 60px rgba(139, 92, 246, 0.3);
+  }
+  
+  .glow-cyan {
+    box-shadow: 0 0 30px rgba(34, 211, 238, 0.6), 0 0 60px rgba(34, 211, 238, 0.3);
+  }
+  
+  .glow-pink {
+    box-shadow: 0 0 30px rgba(236, 72, 153, 0.6), 0 0 60px rgba(236, 72, 153, 0.3);
+  }
+  
+  .glow-orange {
+    box-shadow: 0 0 30px rgba(249, 115, 22, 0.6), 0 0 60px rgba(249, 115, 22, 0.3);
+  }
+  
+  .neon-orange {
+    box-shadow: 0 0 20px rgba(249, 115, 22, 0.8), 0 0 40px rgba(249, 115, 22, 0.4), 0 0 60px rgba(249, 115, 22, 0.2);
+  }
+  
+  .card-hover {
+    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl;
+  }
+  
+  .neon-border {
+    @apply border-2;
+    border-image: linear-gradient(45deg, #ec4899, #8b5cf6, #06b6d4) 1;
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.5);
+  }
+  
+  .hero-gradient {
+    background: linear-gradient(180deg, rgba(139, 92, 246, 0.3) 0%, rgba(236, 72, 153, 0.2) 50%, rgba(0, 0, 0, 0.9) 100%);
+  }
+  
+  .image-overlay {
+    background: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.3) 50%, rgba(0, 0, 0, 0.8) 100%);
+  }
+}
+
+@keyframes gradient-shift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-20px);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    opacity: 0.4;
+    box-shadow: 0 0 20px currentColor, 0 0 40px currentColor;
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 30px currentColor, 0 0 60px currentColor, 0 0 90px currentColor;
+  }
+}
+
+.glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-800/50;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-purple-500/50 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-purple-500/70;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

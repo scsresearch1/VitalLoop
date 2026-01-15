@@ -1,4 +1,4 @@
-const { withAndroidManifest, withGradleProperties } = require('@expo/config-plugins');
+const { withAndroidManifest, withGradleProperties, withAppBuildGradle } = require('@expo/config-plugins');
 
 /**
  * Config plugin to ensure react-native-ble-manager native module is included
@@ -42,21 +42,20 @@ const withBLEManager = (config) => {
     return config;
   });
 
-  // Ensure autolinking is enabled (should be default, but making sure)
-  config = withGradleProperties(config, (config) => {
-    config.modResults = config.modResults || [];
+  // Ensure autolinking is enabled and native modules are included
+  config = withAppBuildGradle(config, (config) => {
+    const buildGradle = config.modResults.contents;
     
-    // Ensure React Native autolinking is enabled
-    const hasAutolinking = config.modResults.some(
-      (item) => item.type === 'property' && item.key === 'expo.autolinking.enabled'
-    );
-    
-    if (!hasAutolinking) {
-      config.modResults.push({
-        type: 'property',
-        key: 'expo.autolinking.enabled',
-        value: 'true',
-      });
+    // Ensure autolinkLibrariesWithApp() is present (should be there by default)
+    if (!buildGradle.includes('autolinkLibrariesWithApp()')) {
+      // This should already be there from expo-dev-client, but ensure it
+      config.modResults.contents = buildGradle.replace(
+        /react\s*\{/,
+        `react {
+    /* Autolinking */
+    autolinkLibrariesWithApp()
+`
+      );
     }
 
     return config;

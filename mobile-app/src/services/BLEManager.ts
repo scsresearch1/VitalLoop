@@ -76,16 +76,6 @@ class BLEManagerService {
    */
   async initialize(): Promise<void> {
     try {
-      // Check if BLE is available
-      const state = await this.bleManager.checkState();
-      logger.log('BLE State:', state);
-      
-      if (state === 'off' || state === 'unauthorized') {
-        logger.warn('BLE is not available or not authorized');
-        // Don't throw - allow app to continue without BLE
-        return;
-      }
-      
       await this.bleManager.start({ showAlert: false });
       logger.log('✅ BLE Manager initialized');
     } catch (error) {
@@ -93,6 +83,8 @@ class BLEManagerService {
       // Don't throw - allow app to continue without BLE
       // The app can still function, just without BLE features
       logger.warn('App will continue without BLE support');
+      // Set connection state to indicate BLE is not available
+      this.connectionState.isConnected = false;
     }
   }
 

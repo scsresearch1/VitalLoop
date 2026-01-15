@@ -15,6 +15,7 @@ import {
 import { buildFrame, extractOpcode, validateCRC8 } from '../utils/crc';
 import { multiPacketHandler } from './MultiPacketHandler';
 import { logger } from '../utils/Logger';
+import { requestBLEPermissions, checkBLEPermissions } from '../utils/Permissions';
 
 // Import BLE Manager with fallback handling for native module
 let BleManager: any;
@@ -143,6 +144,19 @@ class BLEManagerService {
     }
 
     try {
+      // Request BLE permissions first
+      logger.log('Requesting BLE permissions...');
+      const hasPermissions = await requestBLEPermissions();
+      
+      if (!hasPermissions) {
+        const errorMsg = 'Bluetooth permissions are required to connect to your ring. Please grant permissions in Settings.';
+        logger.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+      
+      logger.log('✅ BLE permissions granted');
+      
+      // Initialize BLE Manager
       await this.bleManager.start({ showAlert: false });
       logger.log('✅ BLE Manager initialized');
     } catch (error) {
@@ -152,6 +166,7 @@ class BLEManagerService {
       logger.warn('App will continue without BLE support');
       // Set connection state to indicate BLE is not available
       this.connectionState.isConnected = false;
+      throw error; // Re-throw to let caller handle
     }
   }
 
@@ -163,6 +178,13 @@ class BLEManagerService {
     if (!this.bleManager || !this.isAvailable) {
       logger.warn('BLE Manager not available for scanning');
       return [];
+    }
+
+    // Check permissions before scanning
+    const hasPermissions = await checkBLEPermissions();
+    if (!hasPermissions) {
+      logger.error('BLE permissions not granted. Cannot scan.');
+      throw new Error('Bluetooth permissions are required. Please grant permissions in Settings.');
     }
 
     if (this.connectionState.isScanning) {

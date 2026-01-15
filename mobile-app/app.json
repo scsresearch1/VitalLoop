@@ -31,7 +31,13 @@
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION"
-      ]
+      ],
+      "blockedPermissions": [],
+      "usesPermissionFlags": {
+        "android.permission.BLUETOOTH_SCAN": {
+          "neverForLocation": true
+        }
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"

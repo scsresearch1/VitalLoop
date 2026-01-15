@@ -18,13 +18,14 @@ export async function requestBLEPermissions(): Promise<boolean> {
   const androidVersion = Platform.Version as number;
 
   try {
-    // Android 12+ (API 31+) - requires BLUETOOTH_SCAN and BLUETOOTH_CONNECT
+    // Android 12+ (API 31+) - requires BLUETOOTH_SCAN, BLUETOOTH_CONNECT, and ACCESS_FINE_LOCATION
     if (androidVersion >= 31) {
-      console.log('📱 Android 12+ detected - requesting new Bluetooth permissions');
+      console.log('📱 Android 12+ detected - requesting Bluetooth and Location permissions');
 
       const permissions = [
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       ];
 
       // Request all permissions at once
@@ -35,21 +36,24 @@ export async function requestBLEPermissions(): Promise<boolean> {
       // Check if all required permissions are granted
       const scanGranted = granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED;
       const connectGranted = granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
+      const locationGranted = granted[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] === PermissionsAndroid.RESULTS.GRANTED;
 
-      if (!scanGranted || !connectGranted) {
+      if (!scanGranted || !connectGranted || !locationGranted) {
         console.error('❌ Permissions denied:', {
           scan: scanGranted ? 'GRANTED' : granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN],
           connect: connectGranted ? 'GRANTED' : granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT],
+          location: locationGranted ? 'GRANTED' : granted[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION],
         });
 
         // Check if permissions are blocked (user selected "Don't ask again")
         const scanBlocked = granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
         const connectBlocked = granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
+        const locationBlocked = granted[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
 
-        if (scanBlocked || connectBlocked) {
+        if (scanBlocked || connectBlocked || locationBlocked) {
           Alert.alert(
             'Permissions Required',
-            'Bluetooth permissions are required to connect to your ring. Please enable them in Settings.',
+            'Bluetooth and Location permissions are required to connect to your ring. Please enable them in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
               {
@@ -61,7 +65,7 @@ export async function requestBLEPermissions(): Promise<boolean> {
         } else {
           Alert.alert(
             'Permissions Required',
-            'Bluetooth permissions are required to scan and connect to your ring.',
+            'Bluetooth and Location permissions are required to scan and connect to your ring.',
             [{ text: 'OK' }]
           );
         }
@@ -69,7 +73,7 @@ export async function requestBLEPermissions(): Promise<boolean> {
         return false;
       }
 
-      console.log('✅ All Bluetooth permissions granted');
+      console.log('✅ All Bluetooth and Location permissions granted');
       return true;
     }
     // Android 6-11 (API 23-30) - only need location permission
@@ -139,8 +143,11 @@ export async function checkBLEPermissions(): Promise<boolean> {
       const connectGranted = await PermissionsAndroid.check(
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
       );
+      const locationGranted = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+      );
 
-      return scanGranted && connectGranted;
+      return scanGranted && connectGranted && locationGranted;
     } else if (androidVersion >= 23) {
       const locationGranted = await PermissionsAndroid.check(
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION

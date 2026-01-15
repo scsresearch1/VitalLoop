@@ -17,8 +17,18 @@ import { buildFrame, extractOpcode, validateCRC8 } from '../utils/crc';
 import { multiPacketHandler } from './MultiPacketHandler';
 import { logger } from '../utils/Logger';
 
+// Check if BleManager is available (native module linked)
+let BleManagerAvailable = false;
+try {
+  if (BleManager && typeof BleManager === 'function') {
+    BleManagerAvailable = true;
+  }
+} catch (error) {
+  logger.warn('BleManager native module not available');
+}
+
 class BLEManagerService {
-  private bleManager: BleManager;
+  private bleManager: BleManager | null = null;
   private connectionState: ConnectionState;
   private connectedDeviceId: string | null = null;
   private rxCharacteristic: string | null = null;
@@ -30,51 +40,77 @@ class BLEManagerService {
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
   }> = new Map();
+  private isAvailable: boolean = false;
 
   constructor() {
-    this.bleManager = new BleManager();
     this.connectionState = {
       isScanning: false,
       isConnecting: false,
       isConnected: false,
     };
-    this.setupListeners();
+    
+    if (BleManagerAvailable) {
+      try {
+        this.bleManager = new BleManager();
+        this.isAvailable = true;
+        this.setupListeners();
+      } catch (error) {
+        logger.error('Failed to create BleManager instance:', error);
+        this.isAvailable = false;
+      }
+    } else {
+      logger.warn('BleManager native module not available - BLE features disabled');
+      this.isAvailable = false;
+    }
   }
 
   private setupListeners() {
-    // BLE State changes
-    this.bleManager.addListener('BleManagerDidUpdateState', (args: { state: State }) => {
-      logger.log('BLE State changed:', args.state);
-    });
+    if (!this.bleManager || !this.isAvailable) {
+      return;
+    }
 
-    // Characteristic notifications
-    this.bleManager.addListener(
-      'BleManagerDidUpdateValueForCharacteristic',
-      (data: { value: number[]; characteristic: string; peripheral: string }) => {
-        this.handleNotification(data.value, data.characteristic);
-      }
-    );
+    try {
+      // BLE State changes
+      this.bleManager.addListener('BleManagerDidUpdateState', (args: { state: State }) => {
+        logger.log('BLE State changed:', args.state);
+      });
 
-    // Connection events
-    this.bleManager.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
-      logger.log('✅ Connected to device:', data.peripheral);
-      this.connectionState.isConnecting = false;
-      this.connectionState.isConnected = true;
-      this.connectedDeviceId = data.peripheral;
-      this.discoverServices(data.peripheral);
-    });
+      // Characteristic notifications
+      this.bleManager.addListener(
+        'BleManagerDidUpdateValueForCharacteristic',
+        (data: { value: number[]; characteristic: string; peripheral: string }) => {
+          this.handleNotification(data.value, data.characteristic);
+        }
+      );
 
-    this.bleManager.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
-      logger.log('❌ Disconnected from device:', data.peripheral);
-      this.connectionState.isConnected = false;
-      this.connectedDeviceId = null;
-    });
+      // Connection events
+      this.bleManager.addListener('BleManagerConnectPeripheral', (data: { peripheral: string }) => {
+        logger.log('✅ Connected to device:', data.peripheral);
+        this.connectionState.isConnecting = false;
+        this.connectionState.isConnected = true;
+        this.connectedDeviceId = data.peripheral;
+        this.discoverServices(data.peripheral);
+      });
+
+      this.bleManager.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
+        logger.log('❌ Disconnected from device:', data.peripheral);
+        this.connectionState.isConnected = false;
+        this.connectedDeviceId = null;
+      });
+    } catch (error) {
+      logger.error('Failed to setup BLE listeners:', error);
+    }
   }
 
   /**
    * Initialize BLE Manager
    */
   async initialize(): Promise<void> {
+    if (!this.bleManager || !this.isAvailable) {
+      logger.warn('BLE Manager not available - native module not linked');
+      throw new Error('BLE native module not available. Please rebuild the app with native modules.');
+    }
+
     try {
       await this.bleManager.start({ showAlert: false });
       logger.log('✅ BLE Manager initialized');
@@ -93,6 +129,11 @@ class BLEManagerService {
    * @param duration - Scan duration in milliseconds (default: 5000)
    */
   async scanForDevices(duration: number = 5000): Promise<Device[]> {
+    if (!this.bleManager || !this.isAvailable) {
+      logger.warn('BLE Manager not available for scanning');
+      return [];
+    }
+
     if (this.connectionState.isScanning) {
       return [];
     }
@@ -138,6 +179,10 @@ class BLEManagerService {
    * Connect to a Ring device
    */
   async connect(deviceId: string): Promise<void> {
+    if (!this.bleManager || !this.isAvailable) {
+      throw new Error('BLE Manager not available - native module not linked');
+    }
+
     if (this.connectionState.isConnecting || this.connectionState.isConnected) {
       throw new Error('Already connecting or connected');
     }
@@ -267,6 +312,10 @@ class BLEManagerService {
    * Send command to device
    */
   async sendCommand(opcode: Opcode, payload: number[] = []): Promise<number[]> {
+    if (!this.bleManager || !this.isAvailable) {
+      throw new Error('BLE Manager not available - native module not linked');
+    }
+
     if (!this.connectionState.isConnected || !this.txCharacteristic || !this.serviceUUID) {
       throw new Error('Not connected to device');
     }
@@ -334,6 +383,10 @@ class BLEManagerService {
    * Disconnect from device
    */
   async disconnect(): Promise<void> {
+    if (!this.bleManager || !this.isAvailable) {
+      return;
+    }
+
     if (this.connectedDeviceId) {
       try {
         await this.bleManager.disconnect(this.connectedDeviceId);
@@ -356,7 +409,13 @@ class BLEManagerService {
    * Cleanup
    */
   destroy(): void {
-    this.bleManager.destroy();
+    if (this.bleManager && this.isAvailable) {
+      try {
+        this.bleManager.destroy();
+      } catch (error) {
+        logger.error('Error destroying BLE Manager:', error);
+      }
+    }
     this.listeners.clear();
     this.pendingRequests.forEach(req => clearTimeout(req.timeout));
     this.pendingRequests.clear();
@@ -372,8 +431,8 @@ function getBLEManager(): BLEManagerService {
       _bleManagerInstance = new BLEManagerService();
     } catch (error) {
       console.error('Failed to create BLE Manager:', error);
-      // Return a mock instance that won't crash
-      throw error;
+      // Create a service instance anyway - it will handle unavailable BLE gracefully
+      _bleManagerInstance = new BLEManagerService();
     }
   }
   return _bleManagerInstance;

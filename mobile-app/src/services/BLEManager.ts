@@ -72,6 +72,12 @@ class BLEManagerService {
   private autoConnectEnabled: boolean = false;
   private autoScanInterval: NodeJS.Timeout | null = null;
   private scanListener: any = null;
+  private connectionLock: boolean = false; // Prevent duplicate connect() calls
+  private notificationsEnabled: boolean = false; // Track if notifications are enabled
+  private connectionCallbacks: Array<(deviceId: string) => void> = []; // Callbacks for when connection is fully ready
+  private connectionLock: boolean = false; // Prevent duplicate connect() calls
+  private notificationsEnabled: boolean = false; // Track if notifications are enabled
+  private connectionCallbacks: Array<(deviceId: string) => void> = []; // Callbacks for when connection is fully ready
 
   constructor() {
     this.connectionState = {
@@ -150,6 +156,7 @@ class BLEManagerService {
         this.connectionState.isConnecting = false;
         this.connectionState.isConnected = true;
         this.connectedDeviceId = data.peripheral;
+        this.notificationsEnabled = false; // Reset notification state
         
         // CRITICAL: Save device ID for reconnection
         this.saveLastDeviceId(data.peripheral);
@@ -167,16 +174,33 @@ class BLEManagerService {
           this.reconnectTimeout = null;
         }
         
-        this.discoverServices(data.peripheral);
+        // Discover services and enable notifications (async)
+        this.discoverServices(data.peripheral).then(() => {
+          // Notifications are now enabled, notify callbacks
+          this.notificationsEnabled = true;
+          logger.log('✅ Connection fully established - services discovered and notifications enabled');
+          this.connectionCallbacks.forEach(callback => callback(data.peripheral));
+          this.connectionCallbacks = []; // Clear callbacks after calling
+        }).catch((error) => {
+          logger.error('Failed to complete service discovery:', error);
+          // Still notify callbacks but with error state
+          this.connectionCallbacks.forEach(callback => callback(data.peripheral));
+          this.connectionCallbacks = [];
+        });
       });
 
       BleManager.addListener('BleManagerDisconnectPeripheral', (data: { peripheral: string }) => {
         logger.log('❌ Disconnected from device:', data.peripheral);
         this.connectionState.isConnected = false;
+        this.notificationsEnabled = false;
+        this.connectionLock = false; // Release lock on disconnect
         
         // CRITICAL: Store device ID before clearing for reconnection
         const disconnectedDeviceId = this.connectedDeviceId || data.peripheral;
         this.connectedDeviceId = null;
+        
+        // Clear connection callbacks
+        this.connectionCallbacks = [];
         
         // Trigger auto-reconnect if this was an unexpected disconnect
         if (disconnectedDeviceId && !this.isReconnecting) {
@@ -539,8 +563,10 @@ class BLEManagerService {
   /**
    * Scan for Ring devices
    * @param duration - Scan duration in milliseconds (default: 5000)
+   * @param includePairedDevices - Whether to include already-paired devices (default: true)
+   * @param stopAutoScan - Whether to stop auto-scan during manual scan (default: true)
    */
-  async scanForDevices(duration: number = 5000): Promise<BLEDevice[]> {
+  async scanForDevices(duration: number = 5000, includePairedDevices: boolean = true, stopAutoScan: boolean = true): Promise<BLEDevice[]> {
     if (!this.isAvailable || !BleManager) {
       logger.warn('BLE Manager not available for scanning');
       return [];
@@ -561,15 +587,47 @@ class BLEManagerService {
       throw new Error('Bluetooth permissions are required. Please grant permissions in Settings.');
     }
 
+    // If already scanning and this is a manual scan, stop auto-scan first
+    if (stopAutoScan && this.connectionState.isScanning && this.autoScanEnabled) {
+      logger.log('⏸️ Stopping auto-scan for manual scan');
+      this.stopAutoScan();
+      // Wait a bit for auto-scan to fully stop
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // If still scanning, wait for it to finish or return early
     if (this.connectionState.isScanning) {
-      return [];
+      logger.warn('⚠️ Scan already in progress, waiting...');
+      // Wait up to 2 seconds for current scan to finish
+      let waitCount = 0;
+      while (this.connectionState.isScanning && waitCount < 20) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitCount++;
+      }
+      if (this.connectionState.isScanning) {
+        logger.warn('⚠️ Previous scan still in progress, returning empty results');
+        return [];
+      }
     }
 
     this.connectionState.isScanning = true;
     const foundDevices: BLEDevice[] = [];
 
     try {
-      // Start scan
+      // CRITICAL: Check already-paired devices first (like auto-scan does)
+      // This is essential - device "R11C_B803" might already be paired
+      if (includePairedDevices) {
+        logger.log('🔍 Checking already-paired devices first...');
+        const pairedDevices = await this.getBondedPeripherals();
+        if (pairedDevices.length > 0) {
+          logger.log(`✅ Found ${pairedDevices.length} Ring device(s) in paired devices`);
+          foundDevices.push(...pairedDevices);
+          // Don't auto-connect during manual scan - let user choose
+        }
+      }
+
+      // Start BLE scan for new devices
+      logger.log(`🔍 Starting BLE scan for ${duration}ms...`);
       await BleManager.scan([], duration, true);
 
       // Listen for discovered devices
@@ -589,11 +647,17 @@ class BLEManagerService {
             device.advertising?.serviceUUIDs?.includes(GATT_SERVICE_UUID);
 
           if (isRingDevice) {
-            foundDevices.push(device);
-            logger.log(`🔔 Ring device discovered: ${device.name || device.id}`);
+            // Check if device already in list (avoid duplicates)
+            const alreadyFound = foundDevices.some(d => d.id === device.id);
+            if (!alreadyFound) {
+              foundDevices.push(device);
+              logger.log(`🔔 Ring device discovered: ${device.name || device.id}`);
+            }
             
-            // Auto-connect if enabled and not already connected/connecting
+            // Auto-connect ONLY if auto-connect is enabled AND this is NOT a manual scan
+            // Manual scans should let user choose which device to connect to
             if (this.autoConnectEnabled && 
+                stopAutoScan === false && // Only auto-connect if this is an auto-scan
                 !this.connectionState.isConnected && 
                 !this.connectionState.isConnecting && 
                 device.id) {
@@ -624,8 +688,11 @@ class BLEManagerService {
           this.scanListener = null;
         }
       }
+
+      logger.log(`✅ Scan complete. Found ${foundDevices.length} Ring device(s)`);
     } catch (error) {
       logger.error('Scan error:', error);
+      throw error; // Re-throw so UI can handle it
     } finally {
       this.connectionState.isScanning = false;
     }
@@ -649,19 +716,122 @@ class BLEManagerService {
       throw new Error(errorMsg);
     }
 
-    if (this.connectionState.isConnecting || this.connectionState.isConnected) {
-      throw new Error('Already connecting or connected');
+    // Check if already connected to this device
+    if (this.connectionState.isConnected && this.connectedDeviceId === deviceId) {
+      logger.log('✅ Already connected to this device');
+      return; // Already connected, no error
     }
 
+    // CRITICAL: Check connection lock to prevent duplicate calls
+    if (this.connectionLock) {
+      logger.warn('⚠️ Connection lock is active - another connect() is in progress');
+      if (this.connectionState.isConnecting && this.connectedDeviceId === deviceId) {
+        logger.log('⏳ Already connecting to this device, please wait...');
+        // Wait for connection to complete (max 5 seconds)
+        return new Promise((resolve, reject) => {
+          const checkInterval = setInterval(() => {
+            if (this.connectionState.isConnected) {
+              clearInterval(checkInterval);
+              resolve();
+            } else if (!this.connectionState.isConnecting) {
+              clearInterval(checkInterval);
+              reject(new Error('Connection attempt completed but not connected'));
+            }
+          }, 500);
+          
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            reject(new Error('Connection timeout - already connecting'));
+          }, 5000);
+        });
+      } else {
+        throw new Error('Connection already in progress to a different device');
+      }
+    }
+
+    // Check if already connecting to this device (double-check)
+    if (this.connectionState.isConnecting && this.connectedDeviceId === deviceId) {
+      logger.log('⏳ Already connecting to this device, please wait...');
+      // Wait for connection to complete (max 5 seconds)
+      return new Promise((resolve, reject) => {
+        const checkInterval = setInterval(() => {
+          if (this.connectionState.isConnected) {
+            clearInterval(checkInterval);
+            resolve();
+          } else if (!this.connectionState.isConnecting) {
+            clearInterval(checkInterval);
+            reject(new Error('Connection attempt completed but not connected'));
+          }
+        }, 500);
+        
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          reject(new Error('Connection timeout - already connecting'));
+        }, 5000);
+      });
+    }
+
+    // If connecting to different device, disconnect first
+    if (this.connectionState.isConnecting || this.connectionState.isConnected) {
+      if (this.connectedDeviceId && this.connectedDeviceId !== deviceId) {
+        logger.log('Disconnecting from previous device before connecting to new one...');
+        try {
+          await this.disconnect();
+          // Wait a bit for disconnect to complete
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (error) {
+          logger.warn('Error disconnecting previous device:', error);
+        }
+      } else {
+        // Same device, already connecting/connected
+        logger.log('Already connecting or connected to this device');
+        return;
+      }
+    }
+
+    // CRITICAL: Stop any active scan before connecting
+    if (this.connectionState.isScanning) {
+      logger.log('⏸️ Stopping active scan before connecting...');
+      try {
+        await BleManager.stopScan();
+        // Remove scan listener if exists
+        if (this.scanListener) {
+          this.scanListener.remove();
+          this.scanListener = null;
+        }
+        this.connectionState.isScanning = false;
+        // Wait a bit for scan to fully stop
+        await new Promise(resolve => setTimeout(resolve, 300));
+        logger.log('✅ Scan stopped');
+      } catch (error) {
+        logger.warn('Error stopping scan:', error);
+        // Continue anyway - connection might still work
+      }
+    }
+
+    // Also stop auto-scan if running
+    if (this.autoScanEnabled) {
+      this.stopAutoScan();
+    }
+
+    // Set connection lock to prevent duplicate calls
+    this.connectionLock = true;
     this.connectionState.isConnecting = true;
     this.connectionState.error = undefined;
+    this.connectedDeviceId = deviceId; // Set early to prevent duplicate attempts
 
     try {
+      logger.log(`🔗 Connecting to device: ${deviceId}`);
       await BleManager.connect(deviceId);
       // Connection will be confirmed via listener
+      logger.log('Connection request sent, waiting for confirmation...');
+      // Note: connectionLock will be released when connection completes or fails
     } catch (error) {
+      this.connectionLock = false; // Release lock on error
       this.connectionState.isConnecting = false;
+      this.connectedDeviceId = null;
       this.connectionState.error = (error as Error).message;
+      logger.error('Connection failed:', error);
       throw error;
     }
   }
@@ -671,7 +841,9 @@ class BLEManagerService {
    */
   private async discoverServices(deviceId: string): Promise<void> {
     try {
+      logger.log('🔍 Retrieving services...');
       const services = await BleManager.retrieveServices(deviceId);
+      logger.log(`✅ Services retrieved successfully (found ${services.length} service(s))`);
       
       // Find main service
       const mainService = services.find((s: any) => s.uuid.toLowerCase() === GATT_SERVICE_UUID.toLowerCase());
@@ -698,14 +870,19 @@ class BLEManagerService {
       this.txCharacteristic = txChar.uuid;
       this.rxCharacteristic = rxChar.uuid;
 
+      logger.debug(`TX: ${this.txCharacteristic}, RX: ${this.rxCharacteristic}`);
+
       // Enable notifications on RX characteristic
       await this.enableNotifications(deviceId, rxChar.uuid);
 
       logger.log('✅ Services discovered and notifications enabled');
-      logger.debug(`TX: ${this.txCharacteristic}, RX: ${this.rxCharacteristic}`);
+      // Release connection lock now that everything is set up
+      this.connectionLock = false;
     } catch (error) {
+      this.connectionLock = false; // Release lock on error
       logger.error('Service discovery error:', error);
       this.connectionState.error = (error as Error).message;
+      throw error; // Re-throw so caller knows it failed
     }
   }
 
@@ -888,6 +1065,49 @@ class BLEManagerService {
   }
 
   /**
+   * Get currently connected device ID (if any)
+   */
+  getConnectedDeviceId(): string | null {
+    return this.connectionState.isConnected ? this.connectedDeviceId : null;
+  }
+
+  /**
+   * Wait for notifications to be enabled after connection
+   * Returns a promise that resolves when notifications are enabled
+   */
+  async waitForNotifications(timeout: number = 10000): Promise<void> {
+    if (this.notificationsEnabled) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      const checkInterval = setInterval(() => {
+        if (this.notificationsEnabled) {
+          clearInterval(checkInterval);
+          resolve();
+        } else if (Date.now() - startTime > timeout) {
+          clearInterval(checkInterval);
+          reject(new Error('Timeout waiting for notifications to be enabled'));
+        } else if (!this.connectionState.isConnected) {
+          clearInterval(checkInterval);
+          reject(new Error('Connection lost while waiting for notifications'));
+        }
+      }, 200);
+
+      // Also register a callback in case notifications are enabled before next check
+      this.connectionCallbacks.push(() => {
+        clearInterval(checkInterval);
+        if (this.notificationsEnabled) {
+          resolve();
+        } else {
+          reject(new Error('Connection ready but notifications not enabled'));
+        }
+      });
+    });
+  }
+
+  /**
    * Get current connection state
    */
   getConnectionState(): ConnectionState {
@@ -971,8 +1191,9 @@ class BLEManagerService {
       }
       
       // If no paired device found or connection failed, scan for new devices
+      // Auto-scan: don't stop itself, and allow auto-connect
       logger.log('No paired Ring device found, scanning for new devices...');
-      await this.scanForDevices(10000);
+      await this.scanForDevices(10000, true, false); // includePairedDevices=true, stopAutoScan=false
       
       // If no device found, retry after delay
       if (!this.connectionState.isConnected) {
@@ -1079,6 +1300,20 @@ export const bleManager = {
       return null;
     }
     return _bleManagerInstance.getLastConnectedDeviceId();
+  },
+
+  getConnectedDeviceId() {
+    if (!_bleManagerInstance) {
+      return null;
+    }
+    return _bleManagerInstance.getConnectedDeviceId();
+  },
+
+  async waitForNotifications(timeout?: number) {
+    if (!_bleManagerInstance) {
+      return Promise.reject(new Error('BLE Manager not initialized'));
+    }
+    return _bleManagerInstance.waitForNotifications(timeout);
   },
   
   async sendCommand(opcode: Opcode, payload?: number[]) {

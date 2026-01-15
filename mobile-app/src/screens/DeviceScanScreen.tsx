@@ -157,8 +157,17 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
     setDevices([]);
 
     try {
-      const foundDevices = await bleManager.scanForDevices(5000);
+      // Manual scan: check paired devices, stop auto-scan, longer duration
+      const foundDevices = await bleManager.scanForDevices(10000, true, true);
       setDevices(foundDevices);
+      
+      if (foundDevices.length === 0) {
+        Alert.alert(
+          'No Devices Found',
+          'No Ring devices were found. Make sure your ring is nearby and powered on.',
+          [{ text: 'OK' }]
+        );
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to scan for devices';
       console.error(error);
@@ -234,6 +243,24 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
   const handleConnect = async (device: BLEDevice) => {
     if (!device.id) return;
 
+    // Check if already connected to this device
+    const connState = bleManager.getConnectionState();
+    if (connState.isConnected) {
+      // Check if connected to this specific device
+      const lastDevice = bleManager.getLastConnectedDeviceId();
+      if (lastDevice === device.id) {
+        Alert.alert('Already Connected', 'You are already connected to this device.');
+        onDeviceConnected(device.id);
+        return;
+      }
+    }
+
+    // Check if already connecting
+    if (connState.isConnecting) {
+      Alert.alert('Connection in Progress', 'Please wait for the current connection attempt to complete.');
+      return;
+    }
+
     // Check Bluetooth state before connecting
     const currentState = bleManager.getBluetoothState();
     if (currentState !== 'poweredOn') {
@@ -256,18 +283,53 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
     try {
       await bleManager.connect(device.id);
       
-      // Wait a bit for connection to establish
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const state = bleManager.getConnectionState();
-      if (state.isConnected) {
+      // Wait for connection to establish
+      let connectionEstablished = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const state = bleManager.getConnectionState();
+        if (state.isConnected) {
+          connectionEstablished = true;
+          break;
+        } else if (!state.isConnecting) {
+          throw new Error('Connection failed');
+        }
+      }
+
+      if (!connectionEstablished) {
+        throw new Error('Connection timeout - device did not connect');
+      }
+
+      // CRITICAL: Wait for notifications to be enabled before showing dashboard
+      console.log('⏳ Waiting for notifications to be enabled...');
+      try {
+        await bleManager.waitForNotifications(10000); // 10 second timeout
+        console.log('✅ Notifications enabled - connection fully ready');
         onDeviceConnected(device.id);
-      } else {
-        throw new Error('Connection failed');
+      } catch (notifError) {
+        console.error('Failed to enable notifications:', notifError);
+        // Still show dashboard but log the error
+        onDeviceConnected(device.id);
+        Alert.alert(
+          'Connection Warning',
+          'Connected to device but notifications may not be enabled. Some features may not work.',
+          [{ text: 'OK' }]
+        );
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to connect to device';
-      console.error(error);
+      console.error('Connection error:', error);
+      
+      // Don't show error if it's "already connecting" - that's handled above
+      if (errorMessage.includes('Already connecting') || errorMessage.includes('already connected')) {
+        // Just wait and check state
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const state = bleManager.getConnectionState();
+        if (state.isConnected) {
+          onDeviceConnected(device.id);
+          return;
+        }
+      }
       
       // Check if error is due to Bluetooth state
       const state = bleManager.getBluetoothState();
@@ -284,7 +346,7 @@ export default function DeviceScanScreen({ onDeviceConnected }: DeviceScanScreen
           ]
         );
       } else {
-        Alert.alert('Error', errorMessage);
+        Alert.alert('Connection Error', errorMessage);
       }
     } finally {
       setIsConnecting(false);

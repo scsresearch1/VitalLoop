@@ -72,6 +72,61 @@ export default function App() {
     };
   }, []);
 
+  // Monitor connection state and update UI when device connects/disconnects
+  // This catches auto-connect events that happen without manual user interaction
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    const checkConnectionState = () => {
+      const state = bleManager.getConnectionState();
+      const currentDeviceId = bleManager.getConnectedDeviceId();
+      
+      // If connected but App state doesn't know about it, update it
+      if (state.isConnected && currentDeviceId && currentDeviceId !== connectedDeviceId) {
+        console.log('✅ Device connected detected (auto-connect), updating UI:', currentDeviceId);
+        setConnectedDeviceId(currentDeviceId);
+      }
+      
+      // If disconnected but App state thinks it's connected, clear it
+      if (!state.isConnected && connectedDeviceId) {
+        console.log('❌ Device disconnected detected, clearing UI');
+        setConnectedDeviceId(null);
+      }
+    };
+
+    // Check immediately
+    checkConnectionState();
+
+    // Check frequently (every 500ms) to catch auto-connect events quickly
+    const interval = setInterval(async () => {
+      const state = bleManager.getConnectionState();
+      const currentDeviceId = bleManager.getConnectedDeviceId();
+      
+      // If connected but App state doesn't know about it, wait for notifications then update
+      if (state.isConnected && currentDeviceId && currentDeviceId !== connectedDeviceId) {
+        console.log('✅ Device connected detected (auto-connect), waiting for notifications...');
+        try {
+          // Wait for notifications to be enabled before showing dashboard
+          await bleManager.waitForNotifications(10000);
+          console.log('✅ Notifications enabled - updating UI');
+          setConnectedDeviceId(currentDeviceId);
+        } catch (error) {
+          console.error('Failed to wait for notifications:', error);
+          // Still update UI but log the error
+          setConnectedDeviceId(currentDeviceId);
+        }
+      }
+      
+      // If disconnected but App state thinks it's connected, clear it
+      if (!state.isConnected && connectedDeviceId) {
+        console.log('❌ Device disconnected detected, clearing UI');
+        setConnectedDeviceId(null);
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [isInitialized, connectedDeviceId]);
+
   const initializeApp = async () => {
     try {
       // CRITICAL FOUNDATION CHECKS - All must pass
@@ -114,19 +169,42 @@ export default function App() {
       console.log('→ Native module verified, proceeding with initialization');
       console.log('===================================');
       
-      // Now safe to initialize BLE Manager
-      await bleManager.initialize();
-      
-      // Enable automatic scanning and connection
-      console.log('🔄 Enabling automatic scan and connect...');
-      bleManager.enableAutoScanAndConnect();
-      console.log('✅ Auto-scan enabled - will automatically find and connect to Ring');
-      
+      // Mark as initialized FIRST so UI can render
       setIsInitialized(true);
       setInitError(null);
+      
+      // Now initialize BLE Manager in background (non-blocking)
+      // This allows the app UI to show immediately
+      bleManager.initialize().then(() => {
+        // Check if already connected to a device (e.g., from previous session)
+        const connectionState = bleManager.getConnectionState();
+        const connectedDevice = bleManager.getConnectedDeviceId();
+        if (connectionState.isConnected && connectedDevice) {
+          console.log('✅ Device already connected on startup:', connectedDevice);
+          // Wait for notifications before updating UI
+          bleManager.waitForNotifications(10000).then(() => {
+            setConnectedDeviceId(connectedDevice);
+          }).catch(() => {
+            // Still update UI even if notifications timeout
+            setConnectedDeviceId(connectedDevice);
+          });
+        }
+        
+        // Enable automatic scanning and connection AFTER UI is ready
+        // Small delay to ensure UI has rendered
+        setTimeout(() => {
+          console.log('🔄 Enabling automatic scan and connect...');
+          bleManager.enableAutoScanAndConnect();
+          console.log('✅ Auto-scan enabled - will automatically find and connect to Ring');
+        }, 500); // 500ms delay to let UI render first
+      }).catch((error) => {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error('Failed to initialize BLE Manager:', error);
+        setInitError(errorMessage);
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('Failed to initialize app:', error);
+      console.error('Failed foundation checks:', error);
       
       // Check if error is "BLE native module not available"
       if (errorMessage.includes('BLE native module not available')) {
@@ -135,9 +213,9 @@ export default function App() {
         console.error('→ Rebuild required: npx expo run:android or eas build');
       }
       
-      setInitError(errorMessage);
-      // Still set initialized to true so app can show error UI
+      // Show UI first, then show error
       setIsInitialized(true);
+      setInitError(errorMessage);
     }
   };
 

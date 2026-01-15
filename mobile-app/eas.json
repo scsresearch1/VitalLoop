@@ -19,6 +19,9 @@
         "buildType": "apk",
         "autoIncrement": true,
         "credentialsSource": "remote"
+      },
+      "env": {
+        "NODE_ENV": "production"
       }
     },
     "production": {

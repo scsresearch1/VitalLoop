@@ -4,9 +4,9 @@
  */
 
 import 'react-native-reanimated';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, ErrorInfo } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, Text, ScrollView } from 'react-native';
 import DeviceScanScreen from './src/screens/DeviceScanScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import WorkoutSelectionScreen from './src/screens/WorkoutSelectionScreen';
@@ -17,10 +17,53 @@ import BottomNav from './src/components/BottomNav';
 import { bleManager } from './src/services/BLEManager';
 import { colors } from './src/theme/colors';
 
+// Error Boundary Component
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null; errorInfo: ErrorInfo | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('App Error:', error, errorInfo);
+    this.setState({ error, errorInfo });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorTitle}>Something went wrong</Text>
+          <ScrollView style={styles.errorScroll}>
+            <Text style={styles.errorText}>
+              {this.state.error?.toString()}
+            </Text>
+            {this.state.errorInfo && (
+              <Text style={styles.errorStack}>
+                {this.state.errorInfo.componentStack}
+              </Text>
+            )}
+          </ScrollView>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
     initializeApp();
@@ -33,8 +76,13 @@ export default function App() {
     try {
       await bleManager.initialize();
       setIsInitialized(true);
+      setInitError(null);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('Failed to initialize app:', error);
+      setInitError(errorMessage);
+      // Still set initialized to true so app can show error UI
+      setIsInitialized(true);
     }
   };
 
@@ -77,18 +125,38 @@ export default function App() {
     return (
       <View style={styles.container}>
         <StatusBar style="light" />
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Initializing...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (initError) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorTitle}>Initialization Error</Text>
+          <Text style={styles.errorText}>{initError}</Text>
+          <Text style={styles.errorSubtext}>
+            The app will still work, but Bluetooth features may be unavailable.
+          </Text>
+        </View>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <StatusBar style="light" />
-      {renderScreen()}
-      {connectedDeviceId && (
-        <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
-      )}
-    </View>
+    <ErrorBoundary>
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        {renderScreen()}
+        {connectedDeviceId && (
+          <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
+        )}
+      </View>
+    </ErrorBoundary>
   );
 }
 
@@ -96,5 +164,45 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.black,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: colors.white,
+    fontSize: 16,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorTitle: {
+    color: colors.pink[500],
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  errorText: {
+    color: colors.white,
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  errorSubtext: {
+    color: colors.slate[400],
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  errorScroll: {
+    maxHeight: 300,
+  },
+  errorStack: {
+    color: colors.slate[400],
+    fontSize: 12,
+    fontFamily: 'monospace',
   },
 });

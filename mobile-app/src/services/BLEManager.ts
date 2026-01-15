@@ -3,7 +3,20 @@
  * Handles Bluetooth Low Energy connection and communication with the Ring
  */
 
-// Import BLE Manager with fallback handling
+import {
+  GATT_SERVICE_UUID,
+  GATT_TX_CHARACTERISTIC_UUID,
+  GATT_RX_CHARACTERISTIC_UUID,
+  GATT_CCCD_UUID,
+  ConnectionState,
+  DeviceInfo,
+  Opcode,
+} from '../types/ble';
+import { buildFrame, extractOpcode, validateCRC8 } from '../utils/crc';
+import { multiPacketHandler } from './MultiPacketHandler';
+import { logger } from '../utils/Logger';
+
+// Import BLE Manager with fallback handling for native module
 let BleManager: any;
 let Device: any;
 let State: any;
@@ -17,18 +30,6 @@ try {
   console.error('Failed to import react-native-ble-manager:', error);
   // Will be handled by availability check
 }
-import {
-  GATT_SERVICE_UUID,
-  GATT_TX_CHARACTERISTIC_UUID,
-  GATT_RX_CHARACTERISTIC_UUID,
-  GATT_CCCD_UUID,
-  ConnectionState,
-  DeviceInfo,
-  Opcode,
-} from '../types/ble';
-import { buildFrame, extractOpcode, validateCRC8 } from '../utils/crc';
-import { multiPacketHandler } from './MultiPacketHandler';
-import { logger } from '../utils/Logger';
 
 // Check if BleManager is available (native module linked)
 let BleManagerAvailable = false;

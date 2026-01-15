@@ -363,5 +363,65 @@ class BLEManagerService {
   }
 }
 
-// Singleton instance
-export const bleManager = new BLEManagerService();
+// Singleton instance - created lazily on first access
+let _bleManagerInstance: BLEManagerService | null = null;
+
+function getBLEManager(): BLEManagerService {
+  if (!_bleManagerInstance) {
+    try {
+      _bleManagerInstance = new BLEManagerService();
+    } catch (error) {
+      console.error('Failed to create BLE Manager:', error);
+      // Return a mock instance that won't crash
+      throw error;
+    }
+  }
+  return _bleManagerInstance;
+}
+
+// Export proxy object that lazily initializes
+export const bleManager = {
+  async initialize() {
+    return getBLEManager().initialize();
+  },
+  
+  async scanForDevices(duration?: number) {
+    return getBLEManager().scanForDevices(duration);
+  },
+  
+  async connect(deviceId: string) {
+    return getBLEManager().connect(deviceId);
+  },
+  
+  async disconnect() {
+    if (_bleManagerInstance) {
+      await _bleManagerInstance.disconnect();
+    }
+  },
+  
+  async sendCommand(opcode: any, payload?: number[]) {
+    return getBLEManager().sendCommand(opcode, payload);
+  },
+  
+  onNotification(opcode: number, callback: (data: number[]) => void) {
+    return getBLEManager().onNotification(opcode, callback);
+  },
+  
+  getConnectionState() {
+    if (!_bleManagerInstance) {
+      return {
+        isScanning: false,
+        isConnecting: false,
+        isConnected: false,
+      };
+    }
+    return _bleManagerInstance.getConnectionState();
+  },
+  
+  destroy() {
+    if (_bleManagerInstance) {
+      _bleManagerInstance.destroy();
+      _bleManagerInstance = null;
+    }
+  },
+};

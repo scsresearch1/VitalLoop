@@ -23,7 +23,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
-      "package": "com.vitalloop.app",
+      "package": "com.scs.research.india.mobileapp",
       "permissions": [
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
@@ -32,12 +32,7 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION"
       ],
-      "blockedPermissions": [],
-      "usesPermissionFlags": {
-        "android.permission.BLUETOOTH_SCAN": {
-          "neverForLocation": true
-        }
-      }
+      "blockedPermissions": []
     },
     "web": {
       "favicon": "./assets/favicon.png"

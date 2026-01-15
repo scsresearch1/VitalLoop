@@ -38,6 +38,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "./app.config.js",
       "expo-dev-client",
       [
         "expo-build-properties",

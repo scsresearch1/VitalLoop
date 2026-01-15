@@ -170,16 +170,25 @@ class SimpleBLE {
     }
 
     // Scan for new devices
-    // API for v12.4.4: scan(serviceUUIDs, seconds, allowDuplicates, scanningOptions)
-    // Note: v12.4.4 has breaking changes in scan method signature
+    // CRITICAL: v12.4.4 BREAKING CHANGE - scan() now takes a single options object, not positional params
+    // Old API (v11): scan(serviceUUIDs, seconds, allowDuplicates)
+    // New API (v12.4.4): scan({ serviceUUIDs, seconds, allowDuplicates, ... })
     try {
-      await BleManager.scan([], 10, true);
-      console.log('✅ Scan started');
+      await BleManager.scan({
+        serviceUUIDs: [],        // Empty array = scan all devices
+        seconds: 10,             // Scan duration in seconds
+        allowDuplicates: true,   // iOS only, but safe to include
+      });
+      console.log('✅ Scan started (using v12.4.4 API)');
     } catch (error: any) {
       console.error('❌ Scan failed:', error);
       // Check for version mismatch
       if (error.message?.includes('version') || error.message?.includes('mismatch')) {
         throw new Error(`Version mismatch in scan method. Rebuild required: ${error.message}`);
+      }
+      // Check if error suggests wrong API usage
+      if (error.message?.includes('arguments') || error.message?.includes('parameter')) {
+        throw new Error(`Scan API mismatch. Using v12.4.4 options object format. Error: ${error.message}`);
       }
       throw error;
     }

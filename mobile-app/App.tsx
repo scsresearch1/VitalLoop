@@ -6,7 +6,7 @@
 import 'react-native-reanimated';
 import React, { useState, useEffect, ErrorInfo } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View, Text, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Linking } from 'react-native';
 import DeviceScanScreen from './src/screens/DeviceScanScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import WorkoutSelectionScreen from './src/screens/WorkoutSelectionScreen';
@@ -181,7 +181,19 @@ export default function App() {
     );
   }
 
+  const handleRetryPermissions = async () => {
+    setInitError(null);
+    setIsInitialized(false);
+    await initializeApp();
+  };
+
+  const handleOpenSettings = () => {
+    Linking.openSettings();
+  };
+
   if (initError) {
+    const isPermissionError = initError.includes('permission') || initError.includes('Permission');
+    
     return (
       <View style={styles.container}>
         <StatusBar style="light" />
@@ -191,6 +203,30 @@ export default function App() {
           <Text style={styles.errorSubtext}>
             The app will still work, but Bluetooth features may be unavailable.
           </Text>
+          
+          {isPermissionError && (
+            <>
+              <TouchableOpacity 
+                style={styles.retryButton}
+                onPress={handleRetryPermissions}
+              >
+                <Text style={styles.retryButtonText}>Retry Permissions</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={styles.settingsButton}
+                onPress={handleOpenSettings}
+              >
+                <Text style={styles.settingsButtonText}>Open Settings</Text>
+              </TouchableOpacity>
+              
+              <Text style={styles.helpText}>
+                Grant the following permissions in Settings:
+                {'\n'}• Bluetooth
+                {'\n'}• Location (required for Bluetooth scanning)
+              </Text>
+            </>
+          )}
         </View>
       </View>
     );
@@ -253,5 +289,36 @@ const styles = StyleSheet.create({
     color: colors.slate[400],
     fontSize: 12,
     fontFamily: 'monospace',
+  },
+  retryButton: {
+    backgroundColor: colors.pink[500],
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  retryButtonText: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  settingsButton: {
+    backgroundColor: colors.slate[700],
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  settingsButtonText: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  helpText: {
+    color: colors.slate[400],
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
   },
 });

@@ -106,16 +106,18 @@ class BLEManagerService {
       // BLE State changes - CRITICAL: Track state for gating operations
       BleManager.addListener('BleManagerDidUpdateState', (args: { state: string }) => {
         const previousState = this.bluetoothState;
-        this.bluetoothState = args.state;
-        logger.log(`BLE State changed: ${previousState} → ${args.state}`);
+        // Normalize state from listener (may be 'on' instead of 'poweredOn')
+        const normalizedState = this.normalizeBluetoothState(args.state);
+        this.bluetoothState = normalizedState;
+        logger.log(`BLE State changed: ${previousState} → ${args.state} (normalized: ${normalizedState})`);
         
         // If Bluetooth was off and is now on, log success
-        if (previousState === 'poweredOff' && args.state === 'poweredOn') {
+        if ((previousState === 'poweredOff' || previousState === 'off') && normalizedState === 'poweredOn') {
           logger.log('✅ Bluetooth enabled - scan/connect operations now available');
         }
         
         // If Bluetooth turned off, clear connection state
-        if (args.state === 'poweredOff') {
+        if (normalizedState === 'poweredOff' || normalizedState === 'off') {
           logger.warn('⚠️ Bluetooth turned OFF - scan/connect operations blocked');
           if (this.connectionState.isConnected) {
             logger.warn('Connection will be lost when Bluetooth is off');
@@ -175,6 +177,7 @@ class BLEManagerService {
   /**
    * Check current Bluetooth state
    * Returns: 'unknown' | 'resetting' | 'unsupported' | 'unauthorized' | 'poweredOff' | 'poweredOn'
+   * Note: react-native-ble-manager may return 'on' instead of 'poweredOn'
    */
   async checkBluetoothState(): Promise<string> {
     if (!this.isAvailable || !BleManager) {
@@ -184,13 +187,36 @@ class BLEManagerService {
     try {
       // react-native-ble-manager uses checkState() method
       const state = await BleManager.checkState();
-      this.bluetoothState = state;
-      logger.log(`Bluetooth state checked: ${state}`);
-      return state;
+      // Normalize state: 'on' -> 'poweredOn', 'off' -> 'poweredOff'
+      const normalizedState = this.normalizeBluetoothState(state);
+      this.bluetoothState = normalizedState;
+      logger.log(`Bluetooth state checked: ${state} (normalized: ${normalizedState})`);
+      return normalizedState;
     } catch (error) {
       logger.error('Failed to check Bluetooth state:', error);
       return 'unknown';
     }
+  }
+
+  /**
+   * Normalize Bluetooth state strings from different formats
+   */
+  private normalizeBluetoothState(state: string): string {
+    const stateLower = state.toLowerCase();
+    
+    // Handle various state formats
+    if (stateLower === 'on' || stateLower === 'poweredon' || stateLower === 'powered_on') {
+      return 'poweredOn';
+    }
+    if (stateLower === 'off' || stateLower === 'poweredoff' || stateLower === 'powered_off') {
+      return 'poweredOff';
+    }
+    if (stateLower === 'unauthorized' || stateLower === 'unauthorised') {
+      return 'unauthorized';
+    }
+    
+    // Return as-is if already normalized or unknown
+    return state;
   }
 
   /**
@@ -379,8 +405,19 @@ class BLEManagerService {
       const state = await this.checkBluetoothState();
       
       if (!this.isBluetoothPoweredOn()) {
-        const errorMsg = `Bluetooth is ${state}. Please enable Bluetooth to scan and connect to your ring.`;
+        // Provide clearer error message based on actual state
+        let errorMsg: string;
+        if (state === 'poweredOff' || state === 'off') {
+          errorMsg = 'Bluetooth is turned off. Please enable Bluetooth in Settings to scan and connect to your ring.';
+        } else if (state === 'unauthorized') {
+          errorMsg = 'Bluetooth permission denied. Please grant Bluetooth permissions in Settings to use this feature.';
+        } else if (state === 'unsupported') {
+          errorMsg = 'Bluetooth is not supported on this device.';
+        } else {
+          errorMsg = `Bluetooth state is "${state}". Please ensure Bluetooth is enabled and permissions are granted.`;
+        }
         logger.error(`❌ ${errorMsg}`);
+        logger.error(`Current Bluetooth state: ${state}`);
         this.connectionState.error = errorMsg;
         throw new Error(errorMsg);
       }

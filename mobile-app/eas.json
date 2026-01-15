@@ -30,9 +30,6 @@
         "autoIncrement": true,
         "credentialsSource": "remote"
       },
-      "env": {
-        "NODE_ENV": "production"
-      },
       "prebuildCommand": "npx expo prebuild --platform android --clean"
     },
     "production-apk": {
@@ -41,9 +38,6 @@
         "autoIncrement": true,
         "credentialsSource": "remote",
         "gradleCommand": ":app:assembleRelease"
-      },
-      "env": {
-        "NODE_ENV": "production"
       },
       "prebuildCommand": "npx expo prebuild --platform android --clean"
     },

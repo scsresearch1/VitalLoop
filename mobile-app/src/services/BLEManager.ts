@@ -359,9 +359,20 @@ class BLEManagerService {
       
       logger.log('✅ BLE permissions granted');
       
-      // Initialize BLE Manager (singleton instance)
-      await BleManager.start({ showAlert: false });
-      logger.log('✅ BLE Manager initialized');
+      // CRITICAL CHECK: Can BleManager.start() execute without throwing?
+      try {
+        // Initialize BLE Manager (singleton instance)
+        await BleManager.start({ showAlert: false });
+        logger.log('✅ BLE Manager initialized - BleManager.start() executed successfully');
+        console.log('✅ CRITICAL CHECK 4 PASSED: BleManager.start() executed without throwing');
+      } catch (startError) {
+        const errorMsg = `BleManager.start() failed: ${startError instanceof Error ? startError.message : String(startError)}`;
+        logger.error('❌ CRITICAL: BleManager.start() threw an error');
+        logger.error(errorMsg);
+        console.error('❌ CRITICAL CHECK 4 FAILED: BleManager.start() threw an error');
+        console.error('→ This indicates native module is present but not properly initialized');
+        throw new Error(errorMsg);
+      }
       
       // CRITICAL: Check Bluetooth state on startup
       logger.log('Checking Bluetooth state...');

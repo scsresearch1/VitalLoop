@@ -74,20 +74,61 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
-      // Log NativeModules status for validation
-      const { NativeModules } = require('react-native');
-      const isPresent = NativeModules.BleManager !== null && NativeModules.BleManager !== undefined;
-      console.log('=== BLE NATIVE MODULE VALIDATION ===');
-      console.log('NativeModules.BleManager:', isPresent ? '✅ PRESENT' : '❌ MISSING');
-      console.log('All NativeModules keys:', Object.keys(NativeModules).filter(key => key.includes('Ble') || key.includes('ble')));
+      // CRITICAL FOUNDATION CHECKS - All must pass
+      const { NativeModules, Platform } = require('react-native');
+      const BleManagerModule = require('react-native-ble-manager');
+      
+      const checks = {
+        '1. NativeModules.BleManager non-null': 
+          NativeModules.BleManager !== null && NativeModules.BleManager !== undefined,
+        
+        '2. Not Expo Go': 
+          !NativeModules.ExponentConstants && Platform.OS === 'android',
+        
+        '3. Not Web build': 
+          Platform.OS === 'android',
+        
+        '4. BleManager module available': 
+          BleManagerModule !== null && BleManagerModule !== undefined,
+      };
+
+      console.log('=== CRITICAL FOUNDATION CHECKS ===');
+      let allPass = true;
+      Object.entries(checks).forEach(([check, result]) => {
+        const status = result ? '✅ YES' : '❌ NO';
+        console.log(`${status} - ${check}`);
+        if (!result) allPass = false;
+      });
+
+      if (!allPass) {
+        const errorMsg = 'CRITICAL: Foundation checks failed. Native module not available. Rebuild required.';
+        console.error('❌ FOUNDATION CHECKS FAILED - REJECT IMMEDIATELY');
+        console.error('→ Do NOT proceed with scanning, GATT, or data parsing');
+        console.error('→ Fix build/configuration issues first');
+        setInitError(errorMsg);
+        setIsInitialized(true);
+        return;
+      }
+
+      console.log('✅ ALL FOUNDATION CHECKS PASSED');
+      console.log('→ Native module verified, proceeding with initialization');
       console.log('===================================');
       
+      // Now safe to initialize BLE Manager
       await bleManager.initialize();
       setIsInitialized(true);
       setInitError(null);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('Failed to initialize app:', error);
+      
+      // Check if error is "BLE native module not available"
+      if (errorMessage.includes('BLE native module not available')) {
+        console.error('❌ CRITICAL: BLE native module not available error');
+        console.error('→ This means the APK does not contain the native module');
+        console.error('→ Rebuild required: npx expo run:android or eas build');
+      }
+      
       setInitError(errorMessage);
       // Still set initialized to true so app can show error UI
       setIsInitialized(true);

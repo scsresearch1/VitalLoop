@@ -47,6 +47,24 @@ class SimpleBLE {
       throw new Error('BLE native module not available');
     }
 
+    // CRITICAL: Check native module version compatibility
+    try {
+      // Verify native module has expected methods
+      const requiredMethods = ['start', 'scan', 'connect', 'retrieveServices', 'startNotification'];
+      const missingMethods = requiredMethods.filter(method => typeof BleManager[method] !== 'function');
+      
+      if (missingMethods.length > 0) {
+        console.error('❌ Native module missing methods:', missingMethods);
+        throw new Error(`BLE native module version mismatch. Missing methods: ${missingMethods.join(', ')}`);
+      }
+      console.log('✅ Native module methods verified');
+    } catch (error: any) {
+      if (error.message.includes('version mismatch')) {
+        throw error;
+      }
+      console.warn('⚠️ Could not verify native module methods:', error.message);
+    }
+
     // CRITICAL: Request permissions BEFORE starting BLE Manager
     console.log('🔐 Requesting Bluetooth permissions...');
     const hasPermissions = await requestBLEPermissions();
@@ -59,10 +77,17 @@ class SimpleBLE {
     // Start BLE Manager AFTER permissions are granted
     console.log('🚀 Starting BLE Manager...');
     try {
+      // Use correct API for v12.4.4 - start() takes options object
       await BleManager.start({ showAlert: false });
       console.log('✅ BLE Manager started');
     } catch (error: any) {
       console.error('❌ Failed to start BLE Manager:', error);
+      
+      // Check for version mismatch errors
+      if (error.message?.includes('version') || error.message?.includes('mismatch')) {
+        throw new Error(`Version mismatch detected. Please rebuild the app: ${error.message}`);
+      }
+      
       throw new Error(`Failed to start BLE Manager: ${error.message}`);
     }
 
@@ -145,7 +170,19 @@ class SimpleBLE {
     }
 
     // Scan for new devices
-    await BleManager.scan([], 10000, true);
+    // API for v12.4.4: scan(serviceUUIDs, seconds, allowDuplicates, scanningOptions)
+    // Note: v12.4.4 has breaking changes in scan method signature
+    try {
+      await BleManager.scan([], 10, true);
+      console.log('✅ Scan started');
+    } catch (error: any) {
+      console.error('❌ Scan failed:', error);
+      // Check for version mismatch
+      if (error.message?.includes('version') || error.message?.includes('mismatch')) {
+        throw new Error(`Version mismatch in scan method. Rebuild required: ${error.message}`);
+      }
+      throw error;
+    }
 
     const scanSub = this.emitter?.addListener('BleManagerDiscoverPeripheral', (deviceData: any) => {
       try {
@@ -221,8 +258,19 @@ class SimpleBLE {
     }
 
     console.log(`🔗 Connecting to ${deviceId}...`);
-    await BleManager.connect(deviceId);
-    // Connection confirmed via listener
+    try {
+      // API for v12.4.4: connect(peripheralId)
+      await BleManager.connect(deviceId);
+      console.log('✅ Connect call completed, waiting for connection event...');
+      // Connection confirmed via listener
+    } catch (error: any) {
+      console.error('❌ Connect failed:', error);
+      // Check for version mismatch
+      if (error.message?.includes('version') || error.message?.includes('mismatch')) {
+        throw new Error(`Version mismatch in connect method. Rebuild required: ${error.message}`);
+      }
+      throw error;
+    }
   }
 
   private async discoverServices(deviceId: string): Promise<void> {
@@ -232,11 +280,23 @@ class SimpleBLE {
       let info: any;
       
       try {
+        // API for v12.4.4: retrieveServices(peripheralId, serviceUUIDs?)
+        // Wait a bit after connection before retrieving services (GATT needs time)
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
         info = await BleManager.retrieveServices(deviceId);
       } catch (bridgeError: any) {
+        const errorMsg = bridgeError?.message || String(bridgeError);
+        
+        // Check for version mismatch errors
+        if (errorMsg.includes('version') || errorMsg.includes('mismatch') || 
+            errorMsg.includes('Version mismatch')) {
+          console.error('❌ Version mismatch error detected:', errorMsg);
+          throw new Error(`Version mismatch between JS and native BLE module. Rebuild required: ${errorMsg}`);
+        }
+        
         // CRITICAL: Handle React Native bridge type mismatch error
         // "UnexpectedNativeTypeException: expected Map, got a array"
-        const errorMsg = bridgeError?.message || String(bridgeError);
         if (errorMsg.includes('expected Map') || 
             errorMsg.includes('got a array') || 
             errorMsg.includes('UnexpectedNativeTypeException')) {
@@ -246,7 +306,8 @@ class SimpleBLE {
           console.error('  1. react-native-ble-manager version bug');
           console.error('  2. Native module serialization issue');
           console.error('  3. Device-specific BLE stack behavior');
-          throw new Error('Bridge type mismatch: retrieveServices returned wrong format. Try reconnecting or check library version.');
+          console.error('  4. Version mismatch between JS and native code');
+          throw new Error('Bridge type mismatch: retrieveServices returned wrong format. Rebuild app to fix version mismatch.');
         }
         throw bridgeError;
       }
@@ -338,8 +399,18 @@ class SimpleBLE {
       console.log('✅ RX:', this.rxChar);
 
       // Enable notifications
-      await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
-      console.log('✅ Notifications enabled - ready to receive data');
+      // API for v12.4.4: startNotification(peripheralId, serviceUUID, characteristicUUID)
+      try {
+        await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
+        console.log('✅ Notifications enabled - ready to receive data');
+      } catch (error: any) {
+        console.error('❌ Failed to enable notifications:', error);
+        // Check for version mismatch
+        if (error.message?.includes('version') || error.message?.includes('mismatch')) {
+          throw new Error(`Version mismatch in startNotification. Rebuild required: ${error.message}`);
+        }
+        throw error;
+      }
     } catch (error: any) {
       console.error('❌ Service discovery failed:', error);
       console.error('Error details:', error.message, error.stack);

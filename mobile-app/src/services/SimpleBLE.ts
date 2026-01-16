@@ -451,6 +451,12 @@ class SimpleBLE {
         console.log('✅ Notifications enabled - ready to receive data');
         console.log('✅ DIAGNOSTIC: Notification subscription active');
         console.log('✅ DIAGNOSTIC: Waiting for BleManagerDidUpdateValueForCharacteristic events...');
+        
+        // CRITICAL: Send START_HEART_RATE command (0x69) to trigger data transmission
+        // The ring stays quiet until it receives this command
+        console.log('📤 Sending START_HEART_RATE command (0x69) to ring...');
+        await this.sendCommand(0x69, []); // Opcode 0x69, empty payload
+        console.log('✅ START_HEART_RATE command sent - ring should start sending data now');
       } catch (error: any) {
         console.error('❌ Failed to enable notifications:', error);
         console.error('❌ DIAGNOSTIC: Error details:', error.message, error.stack);
@@ -483,6 +489,60 @@ class SimpleBLE {
   removeConnectionCallbacks(): void {
     this.connectionCallbacks = [];
     this.disconnectionCallbacks = [];
+  }
+
+  /**
+   * Send command to ring device
+   * @param opcode - Command opcode (e.g., 0x69 for START_HEART_RATE)
+   * @param payload - Optional payload bytes (max 14 bytes)
+   */
+  async sendCommand(opcode: number, payload: number[] = []): Promise<void> {
+    if (!this.connectedDeviceId || !this.serviceUUID || !this.txChar) {
+      throw new Error('Not connected or characteristics not discovered');
+    }
+
+    if (payload.length > 14) {
+      throw new Error('Payload too large (max 14 bytes)');
+    }
+
+    // Build frame: [opcode, payload..., padding, CRC]
+    const frame = new Array(16).fill(0);
+    frame[0] = opcode & 0x7f; // Clear bit 7 for request
+    
+    // Copy payload
+    for (let i = 0; i < payload.length && i < 14; i++) {
+      frame[i + 1] = payload[i] & 0xff;
+    }
+    
+    // Calculate CRC8 (simple implementation)
+    let crc = 0;
+    for (let i = 0; i < 15; i++) {
+      crc ^= frame[i];
+      for (let j = 0; j < 8; j++) {
+        if (crc & 0x01) {
+          crc = (crc >> 1) ^ 0x8c;
+        } else {
+          crc >>= 1;
+        }
+      }
+    }
+    frame[15] = crc & 0xff;
+
+    console.log(`📤 Sending command: opcode 0x${opcode.toString(16).padStart(2, '0')}, payload length: ${payload.length}`);
+    console.log(`📤 DIAGNOSTIC: Frame bytes:`, frame.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+
+    try {
+      await BleManager.write(
+        this.connectedDeviceId,
+        this.serviceUUID,
+        this.txChar,
+        frame
+      );
+      console.log(`✅ Command sent successfully: opcode 0x${opcode.toString(16).padStart(2, '0')}`);
+    } catch (error: any) {
+      console.error('❌ Failed to send command:', error);
+      throw new Error(`Failed to send command: ${error.message}`);
+    }
   }
 
   onData(callback: (data: number[]) => void): void {

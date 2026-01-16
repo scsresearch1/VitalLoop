@@ -7,6 +7,7 @@
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
 import { requestBLEPermissions } from '../utils/Permissions';
 import BleManager from 'react-native-ble-manager';
+import { calculateCRC8, buildFrame } from '../utils/crc';
 
 const BleManagerNative = NativeModules.BleManager;
 
@@ -505,33 +506,14 @@ class SimpleBLE {
       throw new Error('Payload too large (max 14 bytes)');
     }
 
-    // Build frame: [opcode, payload..., padding, CRC]
-    const frame = new Array(16).fill(0);
-    frame[0] = opcode & 0x7f; // Clear bit 7 for request
-    
-    // Copy payload
-    for (let i = 0; i < payload.length && i < 14; i++) {
-      frame[i + 1] = payload[i] & 0xff;
-    }
-    
-    // Calculate CRC8 (simple implementation)
-    let crc = 0;
-    for (let i = 0; i < 15; i++) {
-      crc ^= frame[i];
-      for (let j = 0; j < 8; j++) {
-        if (crc & 0x01) {
-          crc = (crc >> 1) ^ 0x8c;
-        } else {
-          crc >>= 1;
-        }
-      }
-    }
-    frame[15] = crc & 0xff;
+    // Use the proper frame builder from utils/crc.ts
+    const frame = buildFrame(opcode, payload);
 
     console.log(`📤 Sending command: opcode 0x${opcode.toString(16).padStart(2, '0')}, payload length: ${payload.length}`);
     console.log(`📤 DIAGNOSTIC: Frame bytes:`, frame.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
 
     try {
+      // API for v8.6.0: write(peripheralId, serviceUUID, characteristicUUID, data)
       await BleManager.write(
         this.connectedDeviceId,
         this.serviceUUID,
@@ -541,6 +523,7 @@ class SimpleBLE {
       console.log(`✅ Command sent successfully: opcode 0x${opcode.toString(16).padStart(2, '0')}`);
     } catch (error: any) {
       console.error('❌ Failed to send command:', error);
+      console.error('❌ DIAGNOSTIC: Error details:', error.message, error.stack);
       throw new Error(`Failed to send command: ${error.message}`);
     }
   }

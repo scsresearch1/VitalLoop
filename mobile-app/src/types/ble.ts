@@ -45,6 +45,9 @@ export enum Opcode {
   HRV_REQ = 0x39, // HRVReq → HRVRsp
   HRV_SETTING_REQ = 0x38, // HrvSettingReq → HRVSettingRsp
   
+  // Pressure Data (may contain SPO2/temperature)
+  PRESSURE_DATA = 0x37, // PressureRsp (unsolicited notification)
+  
   // Device Notifications
   DEVICE_NOTIFY = 0x73, // DeviceNotifyRsp (catch-all notification)
   

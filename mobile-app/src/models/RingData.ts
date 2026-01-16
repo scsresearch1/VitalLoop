@@ -75,9 +75,20 @@ export interface DeviceStatus {
   lastSyncTime?: number;
 }
 
+export interface RealTimeMetrics {
+  timestamp: number;
+  heartRate?: number; // bpm
+  spo2?: number; // Blood oxygen saturation (0-100%)
+  temperature?: number; // Body temperature (°C)
+  quality?: number; // Signal quality 0-100
+  // Additional metrics that might be in the payload
+  [key: string]: number | undefined;
+}
+
 export interface RingData {
   deviceInfo: DeviceStatus;
   currentHeartRate?: HeartRateData;
+  currentMetrics?: RealTimeMetrics; // Real-time combined metrics
   heartRateHistory: HeartRateData[];
   sleepData: SleepData[];
   bloodPressure: BloodPressureData[];

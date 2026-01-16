@@ -6,9 +6,18 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { simpleBLE } from '../services/SimpleBLE';
+import { dataParser } from '../services/DataParser';
+import { extractOpcode } from '../utils/crc';
+import { Opcode } from '../types/ble';
 
 export default function SimpleDataScreen() {
-  const [receivedData, setReceivedData] = useState<Array<{ time: string; data: number[]; hex: string }>>([]);
+  const [receivedData, setReceivedData] = useState<Array<{ 
+    time: string; 
+    data: number[]; 
+    hex: string;
+    opcode?: number;
+    metrics?: { heartRate?: number; spo2?: number; temperature?: number; quality?: number };
+  }>>([]);
   const [deviceId, setDeviceId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -36,10 +45,49 @@ export default function SimpleDataScreen() {
     console.log('📱 SimpleDataScreen: Registering onData callback');
     simpleBLE.onData((data: number[]) => {
       console.log('📱 SimpleDataScreen: Data received! Length:', data.length);
+      
+      // Extract opcode
+      const opcode = extractOpcode(data);
       const hex = data.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      
+      // Try to parse metrics from the data
+      let metrics: { heartRate?: number; spo2?: number; temperature?: number; quality?: number } | undefined;
+      
+      if (opcode === Opcode.REAL_TIME_HEART_RATE) {
+        // Parse all metrics from opcode 0x1E
+        const parsedMetrics = dataParser.parseRealTimeMetrics(data);
+        if (parsedMetrics) {
+          metrics = {
+            heartRate: parsedMetrics.heartRate,
+            spo2: parsedMetrics.spo2,
+            temperature: parsedMetrics.temperature,
+            quality: parsedMetrics.quality,
+          };
+          console.log('📊 Metrics extracted:', metrics);
+        }
+      } else if (opcode === Opcode.DEVICE_NOTIFY) {
+        // Parse metrics from device notify (opcode 0x73)
+        const notify = dataParser.parseDeviceNotify(data);
+        if (notify?.metrics) {
+          metrics = {
+            heartRate: notify.metrics.heartRate,
+            spo2: notify.metrics.spo2,
+            temperature: notify.metrics.temperature,
+            quality: notify.metrics.quality,
+          };
+          console.log('📊 Device Notify metrics:', metrics);
+        }
+      }
+      
       setReceivedData(prev => {
         const newData = [
-          { time: new Date().toLocaleTimeString(), data, hex },
+          { 
+            time: new Date().toLocaleTimeString(), 
+            data, 
+            hex,
+            opcode,
+            metrics,
+          },
           ...prev.slice(0, 99) // Keep last 100
         ];
         console.log('📱 SimpleDataScreen: Total packets:', newData.length);
@@ -78,6 +126,27 @@ export default function SimpleDataScreen() {
           receivedData.map((item, idx) => (
             <View key={idx} style={styles.dataItem}>
               <Text style={styles.time}>{item.time}</Text>
+              {item.opcode !== undefined && (
+                <Text style={styles.opcode}>
+                  Opcode: 0x{item.opcode.toString(16).padStart(2, '0').toUpperCase()}
+                </Text>
+              )}
+              {item.metrics && (
+                <View style={styles.metricsContainer}>
+                  {item.metrics.heartRate !== undefined && (
+                    <Text style={styles.metric}>❤️ HR: {item.metrics.heartRate} bpm</Text>
+                  )}
+                  {item.metrics.spo2 !== undefined && (
+                    <Text style={styles.metric}>🫁 SPO2: {item.metrics.spo2}%</Text>
+                  )}
+                  {item.metrics.temperature !== undefined && (
+                    <Text style={styles.metric}>🌡️ Temp: {item.metrics.temperature.toFixed(1)}°C</Text>
+                  )}
+                  {item.metrics.quality !== undefined && (
+                    <Text style={styles.metric}>📶 Quality: {item.metrics.quality}%</Text>
+                  )}
+                </View>
+              )}
               <Text style={styles.hex}>{item.hex}</Text>
               <Text style={styles.decimal}>
                 [{item.data.map(b => b.toString().padStart(3)).join(', ')}]
@@ -162,5 +231,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 40,
     fontSize: 14,
+  },
+  opcode: {
+    color: '#8b5cf6',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+    fontFamily: 'monospace',
+  },
+  metricsContainer: {
+    backgroundColor: '#0a0a0a',
+    padding: 8,
+    borderRadius: 6,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  metric: {
+    color: '#10b981',
+    fontSize: 12,
+    marginBottom: 2,
+    fontFamily: 'monospace',
   },
 });

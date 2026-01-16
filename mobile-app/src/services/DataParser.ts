@@ -13,6 +13,7 @@ import {
   ActivityData,
   SportSession,
   DeviceStatus,
+  RealTimeMetrics,
 } from '../models/RingData';
 import { multiPacketHandler } from './MultiPacketHandler';
 import { logger } from '../utils/Logger';
@@ -21,6 +22,7 @@ class DataParserService {
   /**
    * Parse real-time heart rate notification (opcode 0x1E)
    * Format: payload[0] = HR value, payload[1] = quality (optional)
+   * May also contain SPO2, temperature, and other metrics in remaining payload bytes
    */
   parseRealTimeHeartRate(frame: number[]): HeartRateData | null {
     if (frame.length < 16) {
@@ -45,6 +47,91 @@ class DataParserService {
       heartRate,
       quality,
     };
+  }
+
+  /**
+   * Parse real-time metrics notification (opcode 0x1E)
+   * Extracts ALL available metrics from the payload, not just heart rate
+   * 
+   * Based on protocol spec: payload[0] = Heart Rate
+   * Many devices also send SPO2 and temperature in the same notification.
+   * Common patterns:
+   * - payload[0] = HR (bpm)
+   * - payload[1] = Quality/Signal strength (0-100)
+   * - payload[2] = SPO2 (%) - if device supports it
+   * - payload[3] = Temperature (0.1°C units, e.g., 365 = 36.5°C) - if device supports it
+   * - payload[4-13] = Additional metrics or reserved
+   */
+  parseRealTimeMetrics(frame: number[]): RealTimeMetrics | null {
+    if (frame.length < 16) {
+      logger.warn('Invalid frame length for real-time metrics');
+      return null;
+    }
+
+    const payload = frame.slice(1, 15);
+    const timestamp = Date.now();
+    const metrics: RealTimeMetrics = { timestamp };
+
+    // Extract heart rate (always present per spec)
+    const heartRate = payload[0] & 0xFF;
+    if (heartRate > 0 && heartRate <= 250) {
+      metrics.heartRate = heartRate;
+    } else {
+      // Invalid HR, skip this frame
+      return null;
+    }
+
+    // Extract quality/signal strength (common in most devices)
+    const quality = payload[1] & 0xFF;
+    if (quality > 0 && quality <= 100) {
+      metrics.quality = quality;
+    }
+
+    // Extract SPO2 (Blood Oxygen) - common position in health rings
+    // Try multiple possible positions since spec doesn't document it
+    if (payload.length > 2) {
+      // Most common: payload[2]
+      let spo2 = payload[2] & 0xFF;
+      // Some devices use 0xFF or 0x00 as "not available" marker
+      if (spo2 > 0 && spo2 <= 100 && spo2 !== 0xFF) {
+        metrics.spo2 = spo2;
+      } else if (payload.length > 5) {
+        // Alternative position: some devices put SPO2 later in payload
+        spo2 = payload[5] & 0xFF;
+        if (spo2 > 0 && spo2 <= 100 && spo2 !== 0xFF) {
+          metrics.spo2 = spo2;
+        }
+      }
+    }
+
+    // Extract temperature - common positions and formats
+    if (payload.length > 3) {
+      // Format 1: Single byte in 0.1°C units (most common)
+      let tempRaw = payload[3] & 0xFF;
+      if (tempRaw > 0 && tempRaw < 200 && tempRaw !== 0xFF) {
+        metrics.temperature = tempRaw / 10.0;
+      } else if (payload.length > 4) {
+        // Format 2: Two bytes little-endian in 0.1°C units
+        tempRaw = (payload[3] | (payload[4] << 8)) & 0xFFFF;
+        if (tempRaw > 0 && tempRaw < 5000 && tempRaw !== 0xFFFF) {
+          metrics.temperature = tempRaw / 10.0;
+        } else if (payload.length > 6) {
+          // Format 3: Alternative position
+          tempRaw = payload[6] & 0xFF;
+          if (tempRaw > 0 && tempRaw < 200 && tempRaw !== 0xFF) {
+            metrics.temperature = tempRaw / 10.0;
+          }
+        }
+      }
+    }
+
+    // Log full payload for analysis - CRITICAL for identifying actual positions
+    logger.debug(`Full payload (0x1E): ${payload.map((b, i) => `[${i}]=0x${b.toString(16).padStart(2, '0')}(${b})`).join(' ')}`);
+    logger.debug(`Extracted metrics: HR=${metrics.heartRate}, SPO2=${metrics.spo2 || 'N/A'}, Temp=${metrics.temperature?.toFixed(1) || 'N/A'}°C, Quality=${metrics.quality || 'N/A'}`);
+
+    // Return metrics if we have at least heart rate
+    logger.logData('Real-time Metrics', metrics);
+    return metrics;
   }
 
   /**
@@ -304,17 +391,63 @@ class DataParserService {
 
   /**
    * Parse device notify (opcode 0x73) - catch-all notification
+   * This can contain various data types based on dataType field
    */
-  parseDeviceNotify(frame: number[]): { dataType: number; payload: number[] } | null {
+  parseDeviceNotify(frame: number[]): { dataType: number; payload: number[]; metrics?: RealTimeMetrics } | null {
     if (frame.length < 16) return null;
 
     const payload = frame.slice(1, 15);
     const dataType = payload[0] & 0xFF;
+    const dataPayload = payload.slice(1);
 
-    return {
+    const result: { dataType: number; payload: number[]; metrics?: RealTimeMetrics } = {
       dataType,
-      payload: payload.slice(1),
+      payload: dataPayload,
     };
+
+    // Try to parse metrics from device notify based on dataType
+    // Common dataType values:
+    // 11, 18 = Activity data (steps, calories, distance)
+    // Other values might contain HR, SPO2, temperature, etc.
+    if (dataType === 11 || dataType === 18) {
+      // Activity data - already handled by parseActivityNotify
+      return result;
+    } else if (dataPayload.length >= 3) {
+      // Try to extract metrics (HR, SPO2, temp) from device notify
+      const metrics: RealTimeMetrics = {
+        timestamp: Date.now(),
+      };
+
+      // Common pattern: HR, SPO2, temp in first 3 bytes
+      const hr = dataPayload[0] & 0xFF;
+      if (hr > 0 && hr <= 250) {
+        metrics.heartRate = hr;
+      }
+
+      if (dataPayload.length > 1) {
+        const spo2 = dataPayload[1] & 0xFF;
+        if (spo2 > 0 && spo2 <= 100) {
+          metrics.spo2 = spo2;
+        }
+      }
+
+      if (dataPayload.length > 2) {
+        const temp = dataPayload[2] & 0xFF;
+        if (temp > 0 && temp < 200) {
+          metrics.temperature = temp / 10.0;
+        }
+      }
+
+      if (metrics.heartRate || metrics.spo2 || metrics.temperature) {
+        result.metrics = metrics;
+        logger.logData('Device Notify Metrics', metrics);
+      } else {
+        // Log full payload for analysis even if no metrics extracted
+        logger.debug(`Device Notify (0x73) - dataType=${dataType}, payload: ${dataPayload.map((b, i) => `[${i}]=0x${b.toString(16).padStart(2, '0')}(${b})`).join(' ')}`);
+      }
+    }
+
+    return result;
   }
 
   /**

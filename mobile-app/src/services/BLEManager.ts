@@ -1153,6 +1153,10 @@ class BLEManagerService {
       listener(data);
     } else {
       logger.debug(`No listener registered for opcode 0x${opcode.toString(16)}`);
+      // Log unhandled opcodes for debugging - might contain SPO2, temperature, etc.
+      if (opcode !== 0x1E && opcode !== 0x73) {
+        logger.debug(`Unhandled notification opcode 0x${opcode.toString(16)} - payload: ${data.slice(1, 15).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' ')}`);
+      }
     }
   }
 

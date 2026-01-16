@@ -8,7 +8,7 @@ import { dataParser } from './DataParser';
 import { multiPacketHandler } from './MultiPacketHandler';
 import { dataStorageService } from './DataStorageService';
 import { Opcode } from '../types/ble';
-import { RingData, HeartRateData, SleepData, BloodPressureData, HRVData, ActivityData } from '../models/RingData';
+import { RingData, HeartRateData, SleepData, BloodPressureData, HRVData, ActivityData, RealTimeMetrics } from '../models/RingData';
 
 class RingDataService {
   /**
@@ -240,6 +240,54 @@ class RingDataService {
         await bleManager.sendCommand(Opcode.STOP_HEART_RATE);
       } catch (error) {
         console.error('Failed to stop heart rate:', error);
+      }
+    };
+  }
+
+  /**
+   * Start real-time metrics monitoring (HR, SPO2, Temperature, etc.)
+   * Extracts ALL available metrics from notifications, not just heart rate
+   */
+  async startRealTimeMetrics(
+    onMetrics: (metrics: RealTimeMetrics) => void
+  ): Promise<() => void> {
+    // Start monitoring
+    await bleManager.sendCommand(Opcode.START_HEART_RATE);
+
+    // Register listener for real-time notifications (opcode 0x1E) - extract all metrics
+    const unsubscribeHR = bleManager.onNotification(Opcode.REAL_TIME_HEART_RATE, async (data) => {
+      const metrics = dataParser.parseRealTimeMetrics(data);
+      if (metrics) {
+        onMetrics(metrics);
+      }
+    });
+
+    // Also listen for device notify (opcode 0x73) - catch-all that might contain metrics
+    const unsubscribeNotify = bleManager.onNotification(Opcode.DEVICE_NOTIFY, async (data) => {
+      const notify = dataParser.parseDeviceNotify(data);
+      if (notify?.metrics) {
+        onMetrics(notify.metrics);
+      }
+    });
+
+    // Listen for pressure data (opcode 0x37) - may contain additional health metrics
+    const unsubscribePressure = bleManager.onNotification(Opcode.PRESSURE_DATA, async (data) => {
+      // Pressure data might also contain SPO2 or other metrics
+      const metrics = dataParser.parseRealTimeMetrics(data);
+      if (metrics) {
+        onMetrics(metrics);
+      }
+    });
+
+    // Return stop function
+    return async () => {
+      unsubscribeHR();
+      unsubscribeNotify();
+      unsubscribePressure();
+      try {
+        await bleManager.sendCommand(Opcode.STOP_HEART_RATE);
+      } catch (error) {
+        console.error('Failed to stop metrics monitoring:', error);
       }
     };
   }

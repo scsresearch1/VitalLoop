@@ -156,23 +156,43 @@ class SimpleBLE {
     // Data received
     const dataSub = this.emitter.addListener('BleManagerDidUpdateValueForCharacteristic', (data: any) => {
       try {
+        console.log('📦 DIAGNOSTIC: BleManagerDidUpdateValueForCharacteristic event received');
+        console.log('📦 DIAGNOSTIC: Raw data:', JSON.stringify(data));
+        console.log('📦 DIAGNOSTIC: Data type:', typeof data, Array.isArray(data) ? 'ARRAY' : 'OBJECT');
+        console.log('📦 DIAGNOSTIC: onDataCallback set?', !!this.onDataCallback);
+        
         let value: number[] = [];
         
         if (Array.isArray(data)) {
           value = data;
+          console.log('📦 DIAGNOSTIC: Data is array, length:', value.length);
         } else if (data && typeof data === 'object') {
           if (Array.isArray(data.value)) {
             value = data.value;
+            console.log('📦 DIAGNOSTIC: data.value is array, length:', value.length);
           } else if (data.value && typeof data.value === 'object') {
             value = Object.values(data.value) as number[];
+            console.log('📦 DIAGNOSTIC: data.value is object, converted to array, length:', value.length);
+          } else {
+            console.log('📦 DIAGNOSTIC: data.value format:', typeof data.value, data.value);
           }
+        } else {
+          console.log('📦 DIAGNOSTIC: Unknown data format:', typeof data);
         }
         
-        if (value.length > 0 && this.onDataCallback) {
-          this.onDataCallback(value);
+        if (value.length > 0) {
+          console.log('📦 DIAGNOSTIC: Extracted value:', value.slice(0, 10), '... (first 10 bytes)');
+          if (this.onDataCallback) {
+            console.log('✅ DIAGNOSTIC: Calling onDataCallback with', value.length, 'bytes');
+            this.onDataCallback(value);
+          } else {
+            console.warn('⚠️ DIAGNOSTIC: onDataCallback is null - data will be lost!');
+          }
+        } else {
+          console.warn('⚠️ DIAGNOSTIC: No data extracted from notification');
         }
       } catch (error) {
-        console.error('Error processing notification data:', error);
+        console.error('❌ Error processing notification data:', error);
       }
     });
     this.subscriptions.push(dataSub);
@@ -420,12 +440,20 @@ class SimpleBLE {
 
       // FIXED: Enable notifications with timeout
       console.log('🔔 Enabling notifications...');
+      console.log('🔔 DIAGNOSTIC: deviceId:', deviceId);
+      console.log('🔔 DIAGNOSTIC: serviceUUID:', this.serviceUUID);
+      console.log('🔔 DIAGNOSTIC: rxChar:', this.rxChar);
+      console.log('🔔 DIAGNOSTIC: onDataCallback set?', !!this.onDataCallback);
+      
       try {
         await BleManager.startNotification(deviceId, this.serviceUUID, this.rxChar);
         this.notificationsEnabled = true;
         console.log('✅ Notifications enabled - ready to receive data');
+        console.log('✅ DIAGNOSTIC: Notification subscription active');
+        console.log('✅ DIAGNOSTIC: Waiting for BleManagerDidUpdateValueForCharacteristic events...');
       } catch (error: any) {
         console.error('❌ Failed to enable notifications:', error);
+        console.error('❌ DIAGNOSTIC: Error details:', error.message, error.stack);
         throw new Error(`Failed to enable notifications: ${error.message}`);
       }
     } catch (error: any) {
@@ -458,7 +486,11 @@ class SimpleBLE {
   }
 
   onData(callback: (data: number[]) => void): void {
+    console.log('📞 DIAGNOSTIC: onData() callback registered');
     this.onDataCallback = callback;
+    console.log('📞 DIAGNOSTIC: onDataCallback is now set:', !!this.onDataCallback);
+    console.log('📞 DIAGNOSTIC: Connected device:', this.connectedDeviceId);
+    console.log('📞 DIAGNOSTIC: Notifications enabled?', this.notificationsEnabled);
   }
 
   isConnected(): boolean {

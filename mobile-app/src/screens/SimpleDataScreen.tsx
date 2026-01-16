@@ -12,32 +12,45 @@ export default function SimpleDataScreen() {
   const [deviceId, setDeviceId] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log('📱 SimpleDataScreen: Setting up data listener');
+    
     // Check connection status
     const checkInterval = setInterval(() => {
       if (simpleBLE.isConnected()) {
         const id = simpleBLE.getConnectedDeviceId();
         if (id !== deviceId) {
+          console.log('📱 SimpleDataScreen: Device connected:', id);
           setDeviceId(id);
         }
       } else {
         if (deviceId) {
+          console.log('📱 SimpleDataScreen: Device disconnected');
           setDeviceId(null);
           setReceivedData([]);
         }
       }
     }, 1000);
 
-    // Listen for data
+    // CRITICAL: Set up data listener immediately, even before connection
+    // This ensures callback is ready when notifications are enabled
+    console.log('📱 SimpleDataScreen: Registering onData callback');
     simpleBLE.onData((data: number[]) => {
+      console.log('📱 SimpleDataScreen: Data received! Length:', data.length);
       const hex = data.map(b => b.toString(16).padStart(2, '0')).join(' ');
-      setReceivedData(prev => [
-        { time: new Date().toLocaleTimeString(), data, hex },
-        ...prev.slice(0, 99) // Keep last 100
-      ]);
+      setReceivedData(prev => {
+        const newData = [
+          { time: new Date().toLocaleTimeString(), data, hex },
+          ...prev.slice(0, 99) // Keep last 100
+        ];
+        console.log('📱 SimpleDataScreen: Total packets:', newData.length);
+        return newData;
+      });
     });
+    console.log('📱 SimpleDataScreen: onData callback registered');
 
     return () => {
       clearInterval(checkInterval);
+      console.log('📱 SimpleDataScreen: Cleanup - removing listeners');
     };
   }, [deviceId]);
 
